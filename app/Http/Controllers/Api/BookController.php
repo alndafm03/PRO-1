@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Book;
 use App\Models\Order_items;
 use App\Models\User;
+use App\Models\User_activity;
 use Illuminate\Http\Request;
 
 class BookController extends Controller
@@ -114,6 +115,11 @@ class BookController extends Controller
         if (! $book->digital_file) {
             return response()->json(['message' => 'الملف الرقمي غير متوفر'], 404);
         }
+
+        // ADDED by project owner (not original teammate code) — إضافة لاحقة لسد فجوة بـFR-53:
+        // تسجيل نشاط "read" عند فتح كتاب رقمي مُشترى، بما يتوافق مع نفس التسجيل المضاف بـ
+        // BorrowingController::readDigital() لغرض تغذية خوارزمية التوصيات (FR-54).
+        User_activity::log($request->user()->id, $book->id, 'read');
 
         // FR-35: القراءة داخل النظام فقط ولا يسمح بتنزيل الملف.
         // TODO: استبدل هذا الحقل برابط Streaming محمي (Signed URL قصير الصلاحية) بدل تمرير المسار مباشرة.
