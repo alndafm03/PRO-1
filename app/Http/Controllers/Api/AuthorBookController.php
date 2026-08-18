@@ -8,13 +8,16 @@ use App\Http\Requests\AuthorBook\UpdateAuthorBookRequest;
 use App\Http\Requests\AuthorRequest\RequestBookModificationRequest;
 use App\Models\Author_request;
 use App\Models\Book;
-use App\Models\Borrow_option;
-use App\Models\PhysicalCopy;
+use App\Services\BookProvisioningService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class AuthorBookController extends Controller
 {
+    public function __construct(private readonly BookProvisioningService $provisioning)
+    {
+    }
+
     /**
      * FR-41: عرض قائمة الكتب المرفوعة بواسطة هذا المؤلف.
      */
@@ -75,8 +78,8 @@ class AuthorBookController extends Controller
             ]);
 
             $book->categories()->sync($data['category_ids']);
-            $this->syncPhysicalCopies($book, $data['sale_copies_count'] ?? 0, $data['borrow_copies_count'] ?? 0);
-            $this->syncBorrowOptions($book, $data['borrow_options'] ?? null);
+            $this->provisioning->syncPhysicalCopies($book, $data['sale_copies_count'] ?? 0, $data['borrow_copies_count'] ?? 0);
+            $this->provisioning->syncBorrowOptions($book, $data['borrow_options'] ?? null);
 
             return $book;
         });
@@ -125,7 +128,7 @@ class AuthorBookController extends Controller
             }
 
             if (array_key_exists('sale_copies_count', $data) || array_key_exists('borrow_copies_count', $data)) {
-                $this->syncPhysicalCopies(
+                $this->provisioning->syncPhysicalCopies(
                     $book,
                     $data['sale_copies_count'] ?? $book->physicalCopies()->forSale()->count(),
                     $data['borrow_copies_count'] ?? $book->physicalCopies()->forBorrowing()->count(),
@@ -133,7 +136,7 @@ class AuthorBookController extends Controller
             }
 
             if (array_key_exists('borrow_options', $data)) {
-                $this->syncBorrowOptions($book, $data['borrow_options']);
+                $this->provisioning->syncBorrowOptions($book, $data['borrow_options']);
             }
         });
 
@@ -193,44 +196,5 @@ class AuthorBookController extends Controller
         ]);
 
         return response()->json(['message' => 'تم إرسال طلب التعديل بنجاح', 'data' => $modificationRequest], 201);
-    }
-
-    /**
-     * BR-02: يحافظ على فصل نسخ البيع عن نسخ الإعارة — يضيف/يحذف نسخ متاحة (available) بس
-     * للوصول للعدد المطلوب، ولا يلمس نسخ مباعة/مستعارة حاليًا.
-     */
-    private function syncPhysicalCopies(Book $book, int $saleCount, int $borrowCount): void
-    {
-        foreach (['sale' => $saleCount, 'borrowing' => $borrowCount] as $purpose => $targetCount) {
-            $existing = $book->physicalCopies()->where('purpose', $purpose)->get();
-            $currentCount = $existing->count();
-
-            if ($targetCount > $currentCount) {
-                for ($i = 0; $i < $targetCount - $currentCount; $i++) {
-                    PhysicalCopy::create(['book_id' => $book->id, 'purpose' => $purpose, 'status' => 'available']);
-                }
-            } elseif ($targetCount < $currentCount) {
-                $removable = $existing->where('status', 'available')->take($currentCount - $targetCount);
-                PhysicalCopy::whereIn('id', $removable->pluck('id'))->delete();
-            }
-        }
-    }
-
-    private function syncBorrowOptions(Book $book, ?array $options): void
-    {
-        if ($options === null) {
-            return;
-        }
-
-        $book->borrow_option()->delete();
-
-        foreach ($options as $option) {
-            Borrow_option::create([
-                'book_id' => $book->id,
-                'duration_days' => $option['duration_days'],
-                'physical_price' => $option['physical_price'] ?? null,
-                'digital_price' => $option['digital_price'] ?? null,
-            ]);
-        }
     }
 }
