@@ -4,7 +4,6 @@ namespace Database\Factories;
 
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Str;
 
 /**
  * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\User>
@@ -18,27 +17,32 @@ class UserFactory extends Factory
 
     /**
      * Define the model's default state.
+     * FIX: كانت مبنية على schema Laravel الافتراضي (name/email_verified_at) وهاد غير موجود
+     * بجدول users الفعلي (full_name/username/phone/birthday/status) — ما كانت تشتغل أصلاً.
      *
      * @return array<string, mixed>
      */
     public function definition(): array
     {
         return [
-            'name' => fake()->name(),
+            'full_name' => fake()->name(),
+            'username' => fake()->unique()->userName(),
+            'phone' => fake()->unique()->numerify('09########'),
             'email' => fake()->unique()->safeEmail(),
-            'email_verified_at' => now(),
             'password' => static::$password ??= Hash::make('password'),
-            'remember_token' => Str::random(10),
+            'status' => 'active',
+            'birthday' => fake()->dateTimeBetween('-60 years', '-18 years')->format('Y-m-d'),
+            'is_system_account' => false,
         ];
     }
 
     /**
-     * Indicate that the model's email address should be unverified.
+     * Indicate that the account is disabled.
      */
-    public function unverified(): static
+    public function disabled(): static
     {
         return $this->state(fn (array $attributes) => [
-            'email_verified_at' => null,
+            'status' => 'disabled',
         ]);
     }
 }
