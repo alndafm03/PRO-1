@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Author_request;
+use App\Models\Notification;
 use App\Models\Role;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -39,6 +40,13 @@ class AdminAuthorController extends Controller
         $authorRole = Role::firstOrCreate(['name' => 'author']);
         $authorRequest->user->roles()->syncWithoutDetaching([$authorRole->id]);
 
+        // ADDED by project owner (not original teammate code) — إشعار FR-73 "Important Request Update"
+        Notification::notify($authorRequest->user_id, 'request_update', [
+            'request_id' => $authorRequest->id,
+            'request_type' => 'author_upgrade',
+            'decision' => 'approved',
+        ]);
+
         return response()->json(['message' => 'تمت الموافقة على المؤلف بنجاح', 'data' => $authorRequest]);
     }
 
@@ -53,6 +61,13 @@ class AdminAuthorController extends Controller
             'status'     => 'rejected_by_admin',
             'decided_by' => $request->user()->id,
             'decided_at' => now(),
+        ]);
+
+        // ADDED by project owner (not original teammate code) — إشعار FR-73 "Important Request Update"
+        Notification::notify($authorRequest->user_id, 'request_update', [
+            'request_id' => $authorRequest->id,
+            'request_type' => 'author_upgrade',
+            'decision' => 'rejected',
         ]);
 
         return response()->json(['message' => 'تم رفض الطلب', 'data' => $authorRequest]);
