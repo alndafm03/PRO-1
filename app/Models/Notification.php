@@ -49,4 +49,16 @@ class Notification extends Model
             $this->update(['read_at' => now()]);
         }
     }
+
+    /**
+     * FR-73: إنشاء إشعار In-App. لا يوجد إرسال Push فعلي بالنطاق الحالي، push_sent تبقى false.
+     */
+    public static function notify(int $userId, string $type, array $data = []): self
+    {
+        return static::create([
+            'user_id' => $userId,
+            'type' => $type,
+            'data' => $data,
+        ]);
+    }
 }

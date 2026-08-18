@@ -114,7 +114,10 @@ class Borrowing extends Model
             return 0;
         }
 
-        return now()->diffInDays($this->end_date);
+        // FIX: Carbon 3's diffInDays() is signed by default (negative when the target is in
+        // the past), unlike Carbon 2 — this returned negative day counts for every overdue
+        // borrowing, which fed straight into calculateFine() as a negative fine.
+        return (int) now()->diffInDays($this->end_date, absolute: true);
     }
 
     public function canRenew(): bool
@@ -128,7 +131,14 @@ class Borrowing extends Model
 
     public function calculateFine(): float
     {
-        // BR-07: fine = 5% × price × days_late
-        return round(0.05 * (float) $this->price * $this->daysLateAttribute(), 2);
+        // BR-07: fine = 5% × price × days_late, capped at the BOOK's own price (not the borrowing price).
+        // FIX: كانت هاي الدالة بدون سقف إطلاقًا، بمخالفة صريحة لـFR-32 ("لا يمكن أن تتجاوز الغرامة سعر الكتاب").
+        $fine = round(0.05 * (float) $this->price * $this->daysLateAttribute(), 2);
+
+        $bookPrice = $this->book_type === 'physical'
+            ? (float) $this->book?->price_physical
+            : (float) $this->book?->price_digital;
+
+        return $bookPrice > 0 ? min($fine, $bookPrice) : $fine;
     }
 }
