@@ -8,6 +8,7 @@ use App\Models\Book;
 use App\Models\Borrow_option;
 use App\Models\Borrowing;
 use App\Models\PhysicalCopy;
+use App\Models\User_activity;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -87,6 +88,8 @@ class BorrowingController extends Controller
             return $borrowing;
         });
 
+        User_activity::log($user->id, $book->id, 'borrow');
+
         return response()->json([
             'message' => 'تم إنشاء طلب الإعارة، بانتظار الدفع',
             'data' => $borrowing->load('payments'),
@@ -128,6 +131,8 @@ class BorrowingController extends Controller
             'amount' => $option->digital_price,
             'status' => 'pending',
         ]);
+
+        User_activity::log($user->id, $book->id, 'borrow');
 
         return response()->json([
             'message' => 'تم إنشاء طلب الإعارة، بانتظار الدفع',
@@ -177,6 +182,8 @@ class BorrowingController extends Controller
         }
 
         $book = $borrowing->book;
+
+        User_activity::log($request->user()->id, $book->id, 'read');
 
         return response()->json([
             'data' => [

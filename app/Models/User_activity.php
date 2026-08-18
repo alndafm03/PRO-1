@@ -27,4 +27,16 @@ class User_activity extends Model
     {
         return $query->where('activity_type', $type);
     }
+
+    /**
+     * FR-53: تسجيل نشاط لأغراض التوصيات فقط (FR-54).
+     */
+    public static function log(int $userId, int $bookId, string $activityType): self
+    {
+        return static::create([
+            'user_id' => $userId,
+            'book_id' => $bookId,
+            'activity_type' => $activityType,
+        ]);
+    }
 }

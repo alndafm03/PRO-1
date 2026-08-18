@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Book;
+use App\Models\User_activity;
 use Illuminate\Http\Request;
 
 class FavoriteController extends Controller
@@ -25,7 +26,12 @@ class FavoriteController extends Controller
      */
     public function store(Request $request, Book $book)
     {
-        $request->user()->favorites()->firstOrCreate(['book_id' => $book->id]);
+        $favorite = $request->user()->favorites()->firstOrCreate(['book_id' => $book->id]);
+
+        if ($favorite->wasRecentlyCreated) {
+            // FR-53: يُسجَّل النشاط فقط عند إضافة جديدة فعلية، مش عند تكرار طلب لعنصر موجود أصلًا.
+            User_activity::log($request->user()->id, $book->id, 'favorite');
+        }
 
         return response()->json(['message' => 'تمت إضافة الكتاب إلى المفضلة'], 201);
     }

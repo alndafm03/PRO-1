@@ -8,6 +8,7 @@ use App\Models\Order;
 use App\Models\Order_items;
 use App\Models\PhysicalCopy;
 use App\Models\System_setting;
+use App\Models\User_activity;
 use App\Services\CartService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -116,6 +117,11 @@ class OrderController extends Controller
         });
 
         $cartService->clear($user);
+
+        // FR-53: نشاط "شراء" لكل كتاب مختلف بالطلب (مرة وحدة حتى لو اشترى عدة نسخ من نفس الكتاب).
+        foreach (collect($cart)->pluck('book_id')->unique() as $bookId) {
+            User_activity::log($user->id, $bookId, 'purchase');
+        }
 
         return response()->json([
             'message' => 'تم إنشاء الطلب بنجاح، بانتظار الدفع',
