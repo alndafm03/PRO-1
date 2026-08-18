@@ -34,7 +34,7 @@ class Reservation extends Model
     {
         return $this->belongsTo(User::class, 'created_by');
     }
-    public function payment():MorphMany
+    public function payments():MorphMany
     {
         return $this->morphMany(Payment::class,'payable');
     }
