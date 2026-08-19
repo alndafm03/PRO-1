@@ -272,6 +272,7 @@ Route::middleware(['auth:sanctum', 'role:admin'])
         Route::get('/author-requests/pre-approved', [AdminAuthorController::class, 'preApprovedRequests']); // عرض الطلبات المعمدة مبدئياً من موظف المحتوى
         Route::post('/author-requests/{authorRequest}/approve', [AdminAuthorController::class, 'approve']); // اعتماد طلب المؤلف نهائياً وترقية حسابه
         Route::post('/author-requests/{authorRequest}/reject', [AdminAuthorController::class, 'reject']);   // رفض الطلب نهائياً
+        Route::get('/authors', [AdminAuthorController::class, 'index']); // عرض قائمة جميع المؤلفين
 
         // إعدادات النسبة المالية للأرباح
         Route::get('/settings/author-revenue-percent', [AdminSettingsController::class, 'getAuthorRevenuePercent']); // استعلام عن نسبة أرباح المؤلفين من المبيعات

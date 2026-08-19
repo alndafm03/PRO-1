@@ -11,6 +11,24 @@ use Illuminate\Http\Request;
 
 class AdminAuthorController extends Controller
 {
+    public function index(Request $request)
+    {
+        $authors = User::query()
+            ->whereHas('roles', function ($query) {
+                $query->where('name', 'author');
+            })
+            ->when($request->filled('search'), function ($query) use ($request) {
+                $search = $request->search;
+                $query->where(function ($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%");
+                });
+            })
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $authors]);
+    }
     //الطلبات المعتمدة مبدئيًا من موظف المحتوى بانتظار قرار الأدمن
     public function preApprovedRequests(Request $request)
     {

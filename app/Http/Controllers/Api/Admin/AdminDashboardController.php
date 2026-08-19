@@ -158,7 +158,7 @@ class AdminDashboardController extends Controller
         ]);
     }
 
-    // الكتب ذات النشاط المنخفض
+    //FR-75 / BR-19: الكتب ذات النشاط المنخفض
     public function lowActivityBooks(Request $request)
     {
         $since = now()->subDays(30);
