@@ -14,11 +14,25 @@ use Illuminate\Support\Facades\Hash;
 class ProfileController extends Controller
 {
     /**
+     * دالة مساعدة لتنسيق بيانات المستخدم وتحويل مسار الـ avatar إلى رابط URL كامل.
+     */
+    private function formatUserData(User $user): User
+    {
+        if ($user->avatar && ! str_starts_with($user->avatar, 'http')) {
+            $user->avatar = asset('storage/' . $user->avatar);
+        }
+
+        return $user;
+    }
+
+    /**
      * FR-03: عرض بيانات حساب المستخدم الحالي.
      */
     public function show(Request $request)
     {
-        return response()->json(['data' => $request->user()->load('roles')]);
+        $user = $request->user()->load('roles');
+
+        return response()->json(['data' => $this->formatUserData($user)]);
     }
 
     /**
@@ -26,9 +40,13 @@ class ProfileController extends Controller
      */
     public function update(UpdateProfileRequest $request)
     {
-        $request->user()->update($request->validated());
+        $user = $request->user();
+        $user->update($request->validated());
 
-        return response()->json(['message' => 'تم تحديث البيانات بنجاح', 'data' => $request->user()->fresh()]);
+        return response()->json([
+            'message' => 'تم تحديث البيانات بنجاح',
+            'data' => $this->formatUserData($user->fresh()),
+        ]);
     }
 
     /**
@@ -41,9 +59,13 @@ class ProfileController extends Controller
         ]);
 
         $path = $request->file('avatar')->store('avatars', 'public');
-        $request->user()->update(['avatar' => $path]);
+        $user = $request->user();
+        $user->update(['avatar' => $path]);
 
-        return response()->json(['message' => 'تم تحديث الصورة الشخصية بنجاح', 'data' => $request->user()->fresh()]);
+        return response()->json([
+            'message' => 'تم تحديث الصورة الشخصية بنجاح',
+            'data' => $this->formatUserData($user->fresh()),
+        ]);
     }
 
     /**
@@ -57,8 +79,7 @@ class ProfileController extends Controller
     }
 
     /**
-     * FR-04: حذف الحساب نهائيًا — بشرط عدم وجود التزامات نشطة (نفس تعريف
-     * AdminUserController::hasActiveObligations لضمان اتساق القاعدة بين حذف المستخدم لنفسه وحذف الأدمن له).
+     * FR-04: حذف الحساب نهائيًا — بشرط عدم وجود التزامات نشطة.
      */
     public function destroy(Request $request)
     {

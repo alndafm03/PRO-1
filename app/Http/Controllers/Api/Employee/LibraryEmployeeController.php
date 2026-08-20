@@ -26,6 +26,18 @@ class LibraryEmployeeController extends Controller
     }
 
     /**
+     * دالة مساعدة لتحويل مسار cover_image للكتاب إلى رابط URL كامل.
+     */
+    private function formatBookData(?Book $book): ?Book
+    {
+        if ($book && $book->cover_image && ! str_starts_with($book->cover_image, 'http')) {
+            $book->cover_image = asset('storage/' . $book->cover_image);
+        }
+
+        return $book;
+    }
+
+    /**
      * FR-20/BR-08: عرض عمليات الدفع بانتظار التحقق اليدوي.
      */
     public function pendingPayments(Request $request)
@@ -34,6 +46,19 @@ class LibraryEmployeeController extends Controller
             ->with(['user', 'payable'])
             ->latest()
             ->paginate($request->integer('per_page', 20));
+
+        // تحويل روابط الأغلفة إن وجد كتاب مرتبط بالعنصر المدفوع
+        $payments->getCollection()->transform(function (Payment $payment) {
+            if ($payment->payable) {
+                if (method_exists($payment->payable, 'book') && $payment->payable->book) {
+                    $this->formatBookData($payment->payable->book);
+                } elseif ($payment->payable instanceof Book) {
+                    $this->formatBookData($payment->payable);
+                }
+            }
+
+            return $payment;
+        });
 
         return response()->json(['data' => $payments]);
     }
@@ -96,6 +121,14 @@ class LibraryEmployeeController extends Controller
             ->with(['user', 'book'])
             ->latest()
             ->paginate($request->integer('per_page', 20));
+
+        $borrowings->getCollection()->transform(function (Borrowing $borrowing) {
+            if ($borrowing->book) {
+                $this->formatBookData($borrowing->book);
+            }
+
+            return $borrowing;
+        });
 
         return response()->json(['data' => $borrowings]);
     }
@@ -188,7 +221,7 @@ class LibraryEmployeeController extends Controller
             ->map(fn (Borrowing $b) => [
                 'borrowing_id' => $b->id,
                 'user' => $b->user,
-                'book' => $b->book,
+                'book' => $this->formatBookData($b->book),
                 'amount' => (float) $b->fine_amount,
                 'days_late' => $b->fine_days_late,
                 'is_estimated' => false,
@@ -201,7 +234,7 @@ class LibraryEmployeeController extends Controller
             ->map(fn (Borrowing $b) => [
                 'borrowing_id' => $b->id,
                 'user' => $b->user,
-                'book' => $b->book,
+                'book' => $this->formatBookData($b->book),
                 'amount' => $b->calculateFine(),
                 'days_late' => $b->daysLateAttribute(),
                 'is_estimated' => true,
@@ -284,9 +317,12 @@ class LibraryEmployeeController extends Controller
             return $book;
         });
 
+        $loadedBook = $book->load(['categories', 'borrow_option', 'physicalCopies']);
+        $this->formatBookData($loadedBook);
+
         return response()->json([
             'message' => 'تم إدخال الكتاب ونشره بنجاح',
-            'data' => $book->load(['categories', 'borrow_option', 'physicalCopies']),
+            'data' => $loadedBook,
         ], 201);
     }
 
@@ -365,7 +401,7 @@ class LibraryEmployeeController extends Controller
             $payable->update(['status' => 'rejected']);
 
             Notification::notify($payable->user_id, 'operation_confirmation', [
-                'reservation_id' => $payable->id, 'kind' => 'reservation', 'decision' => 'rejected',
+                'reservation_id' => $payable->id, 'kind' => 'rejected',
             ]);
         }
     }

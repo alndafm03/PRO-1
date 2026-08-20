@@ -22,6 +22,17 @@ class BookController extends Controller
             ->latest('published_at')
             ->paginate($request->integer('per_page', 20));
 
+            // تحويل مسارات الصور إلى روابط كاملة لكل عنصر
+        $books->getCollection()->transform(function ($book) {
+            if ($book->cover_image) {
+                $book->cover_image = asset('storage/' . $book->cover_image);
+            }
+            if ($book->author && $book->author->avatar) {
+                $book->author->avatar = asset('storage/' . $book->author->avatar);
+            }
+            return $book;
+        });
+
         return response()->json(['data' => $books]);
     }
 
@@ -40,6 +51,14 @@ class BookController extends Controller
             'borrow_option',
             'physicalCopies' => fn ($q) => $q->forSale()->available(),
         ]);
+
+        // تحويل صورة الغلاف والرمز التعبيري للمؤلف إلى رابط كامل
+        if ($book->cover_image) {
+            $book->cover_image = asset('storage/' . $book->cover_image);
+        }
+        if ($book->author && $book->author->avatar) {
+            $book->author->avatar = asset('storage/' . $book->author->avatar);
+        }
 
         return response()->json([
             'data' => [
@@ -76,7 +95,7 @@ class BookController extends Controller
     /**
      * البروفايل العام للمؤلف وكتبه المنشورة فقط (BR-10: التعطيل لا يخفي الكتب تلقائيًا).
      */
-    public function authorProfile(User $user)
+public function authorProfile(User $user)
     {
         if (! $user->isAuthor()) {
             return response()->json(['message' => 'هذا المستخدم ليس مؤلفًا'], 404);
@@ -87,9 +106,23 @@ class BookController extends Controller
             ->with('categories')
             ->paginate(20);
 
+        // تحويل صور الكتب
+        $books->getCollection()->transform(function ($book) {
+            if ($book->cover_image) {
+                $book->cover_image = asset('storage/' . $book->cover_image);
+            }
+            return $book;
+        });
+
+        // تحويل صورة المؤلف
+        $authorData = $user->only(['id', 'full_name', 'username', 'avatar']);
+        if (!empty($authorData['avatar'])) {
+            $authorData['avatar'] = asset('storage/' . $authorData['avatar']);
+        }
+
         return response()->json([
             'data' => [
-                'author' => $user->only(['id', 'full_name', 'username', 'avatar']),
+                'author' => $authorData,
                 'books' => $books,
             ],
         ]);
@@ -126,9 +159,8 @@ class BookController extends Controller
         return response()->json([
             'data' => [
                 'book_id' => $book->id,
-                'title' => $book->title,
-                'digital_file' => $book->digital_file,
+                'title' => $book->title,'digital_file' => asset('storage/' . $book->digital_file), // أو Storage::url($book->digital_file)
             ],
-        ]);
+            ]);
     }
 }

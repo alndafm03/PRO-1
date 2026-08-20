@@ -220,7 +220,7 @@ Route::middleware(['auth:sanctum', 'role:library_employee'])
             Route::post('/purchases', [WalkInController::class, 'createPurchase']);    // تسجيل بيع كتاب مباشر لزائر الشباك
             Route::post('/borrowings', [WalkInController::class, 'createBorrowing']);  // تسجيل إعارة مباشرة لزائر الشباك
             Route::post('/reservations', [WalkInController::class, 'createReservation']);// تسجيل حجز مقعد مباشر لزائر
-            Route::get('/stats', [WalkInController::class, 'stats']);                 // عرض إحصائيات المبيعات والإعارات المباشرة
+            Route::get('/stats', [WalkInController::class, 'stats']);                 // عرض إحصائيات المبيعات والإعارات المباشر
         });
 
         // إدخال الكتب اليدوية

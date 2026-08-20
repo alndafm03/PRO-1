@@ -19,6 +19,18 @@ class AuthorBookController extends Controller
     }
 
     /**
+     * دالة مساعدة لتحويل مسار غلاف الكتاب إلى رابط URL كامل.
+     */
+    private function formatBookData(Book $book): Book
+    {
+        if ($book->cover_image && ! str_starts_with($book->cover_image, 'http')) {
+            $book->cover_image = asset('storage/' . $book->cover_image);
+        }
+
+        return $book;
+    }
+
+    /**
      * FR-41: عرض قائمة الكتب المرفوعة بواسطة هذا المؤلف.
      */
     public function index(Request $request)
@@ -27,6 +39,9 @@ class AuthorBookController extends Controller
             ->with('categories')
             ->latest()
             ->paginate($request->integer('per_page', 20));
+
+        // تحويل صورة الغلاف في جميع عناصر القائمة
+        $books->getCollection()->transform(fn ($book) => $this->formatBookData($book));
 
         return response()->json(['data' => $books]);
     }
@@ -40,13 +55,13 @@ class AuthorBookController extends Controller
             abort(403, 'هذا الكتاب لا يخصك');
         }
 
-        return response()->json(['data' => $book->load(['categories', 'borrow_option', 'physicalCopies'])]);
+        $book->load(['categories', 'borrow_option', 'physicalCopies']);
+
+        return response()->json(['data' => $this->formatBookData($book)]);
     }
 
     /**
-     * FR-41/FR-42: إنشاء مسودة كتاب جديد (Draft) بكل بياناته (النسخ، الأسعار، الأقسام، خيارات الإعارة).
-     * الملف الرقمي يُخزَّن على disk محلي (local) غير عام — القراءة تتم فقط عبر endpoint محمي (BR-11/FR-35)،
-     * لا يوجد رابط تنزيل مباشر.
+     * FR-41/FR-42: إنشاء مسودة كتاب جديد (Draft) بكل بياناته.
      */
     public function store(StoreAuthorBookRequest $request)
     {
@@ -84,14 +99,16 @@ class AuthorBookController extends Controller
             return $book;
         });
 
+        $book->load(['categories', 'borrow_option', 'physicalCopies']);
+
         return response()->json([
             'message' => 'تم إنشاء مسودة الكتاب بنجاح',
-            'data' => $book->load(['categories', 'borrow_option', 'physicalCopies']),
+            'data' => $this->formatBookData($book),
         ], 201);
     }
 
     /**
-     * FR-41: تعديل بيانات مسودة الكتاب قبل التقديم — متاح فقط طالما الكتاب بحالة Draft.
+     * FR-41: تعديل بيانات مسودة الكتاب قبل التقديم.
      */
     public function updateDraft(UpdateAuthorBookRequest $request, Book $book)
     {
@@ -140,9 +157,11 @@ class AuthorBookController extends Controller
             }
         });
 
+        $updatedBook = $book->fresh()->load(['categories', 'borrow_option', 'physicalCopies']);
+
         return response()->json([
             'message' => 'تم تحديث مسودة الكتاب بنجاح',
-            'data' => $book->fresh()->load(['categories', 'borrow_option', 'physicalCopies']),
+            'data' => $this->formatBookData($updatedBook),
         ]);
     }
 
@@ -161,11 +180,14 @@ class AuthorBookController extends Controller
 
         $book->update(['publish_status' => 'submitted']);
 
-        return response()->json(['message' => 'تم إرسال الكتاب للمراجعة', 'data' => $book]);
+        return response()->json([
+            'message' => 'تم إرسال الكتاب للمراجعة',
+            'data' => $this->formatBookData($book),
+        ]);
     }
 
     /**
-     * FR-43: طلب إجراء تعديل على كتاب منشور مسبقًا (لا يعدَّل الكتاب المنشور مباشرة).
+     * FR-43: طلب إجراء تعديل على كتاب منشور مسبقًا.
      */
     public function requestModification(RequestBookModificationRequest $request, Book $book)
     {
