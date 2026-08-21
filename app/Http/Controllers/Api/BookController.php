@@ -27,6 +27,9 @@ class BookController extends Controller
             if ($book->cover_image) {
                 $book->cover_image = asset('storage/' . $book->cover_image);
             }
+            if ($book->digital_file) {
+                $book->digital_file = asset('storage/' . $book->digital_file);
+            }
             if ($book->author && $book->author->avatar) {
                 $book->author->avatar = asset('storage/' . $book->author->avatar);
             }
@@ -55,6 +58,9 @@ class BookController extends Controller
         // تحويل صورة الغلاف والرمز التعبيري للمؤلف إلى رابط كامل
         if ($book->cover_image) {
             $book->cover_image = asset('storage/' . $book->cover_image);
+        }
+        if ($book->digital_file) {
+            $book->digital_file = asset('storage/' . $book->digital_file);
         }
         if ($book->author && $book->author->avatar) {
             $book->author->avatar = asset('storage/' . $book->author->avatar);
@@ -111,6 +117,9 @@ public function authorProfile(User $user)
             if ($book->cover_image) {
                 $book->cover_image = asset('storage/' . $book->cover_image);
             }
+            if ($book->digital_file) {
+                $book->digital_file = asset('storage/' . $book->digital_file);
+            }
             return $book;
         });
 
@@ -159,7 +168,8 @@ public function authorProfile(User $user)
         return response()->json([
             'data' => [
                 'book_id' => $book->id,
-                'title' => $book->title,'digital_file' => asset('storage/' . $book->digital_file), // أو Storage::url($book->digital_file)
+                'title' => $book->title,
+                'digital_file' => asset('storage/' . $book->digital_file),
             ],
             ]);
     }
