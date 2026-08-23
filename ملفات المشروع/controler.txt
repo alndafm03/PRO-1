@@ -1,0 +1,3477 @@
+
+class AdminAuthorController extends Controller
+{
+    public function index(Request $request)
+    {
+        $authors = User::query()
+            ->whereHas('roles', function ($query) {
+                $query->where('name', 'author');
+            })
+            ->when($request->filled('search'), function ($query) use ($request) {
+                $search = $request->search;
+                $query->where(function ($q) use ($search) {
+                    $q->where('name', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%");
+                });
+            })
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $authors]);
+    }
+    //الطلبات المعتمدة مبدئيًا من موظف المحتوى بانتظار قرار الأدمن
+    public function preApprovedRequests(Request $request)
+    {
+        $requests = Author_request::query()
+            ->upgrade()
+            ->where('status', 'pre_approved')
+            ->with(['user', 'reviewedBy'])
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $requests]);
+    }
+
+    //الموافقة النهائية على طلب مؤلف وترقية حسابه
+    public function approve(Request $request, Author_request $authorRequest)
+    {
+        if (! $authorRequest->isUpgrade() || $authorRequest->status !== 'pre_approved') {
+            return response()->json(['message' => 'هذا الطلب غير قابل للموافقة النهائية حاليًا'], 422);
+        }
+
+        $authorRequest->update([
+            'status'     => 'approved',
+            'decided_by' => $request->user()->id,
+            'decided_at' => now(),
+        ]);
+
+        $authorRole = Role::firstOrCreate(['name' => 'author']);
+        $authorRequest->user->roles()->syncWithoutDetaching([$authorRole->id]);
+
+        // ADDED by project owner (not original teammate code) — إشعار FR-73 "Important Request Update"
+        Notification::notify($authorRequest->user_id, 'request_update', [
+            'request_id' => $authorRequest->id,
+            'request_type' => 'author_upgrade',
+            'decision' => 'approved',
+        ]);
+
+        return response()->json(['message' => 'تمت الموافقة على المؤلف بنجاح', 'data' => $authorRequest]);
+    }
+
+    //رفض الطلب
+    public function reject(Request $request, Author_request $authorRequest)
+    {
+        if (! $authorRequest->isUpgrade() || $authorRequest->status !== 'pre_approved') {
+            return response()->json(['message' => 'هذا الطلب غير قابل للرفض حاليًا'], 422);
+        }
+
+        $authorRequest->update([
+            'status'     => 'rejected_by_admin',
+            'decided_by' => $request->user()->id,
+            'decided_at' => now(),
+        ]);
+
+        // ADDED by project owner (not original teammate code) — إشعار FR-73 "Important Request Update"
+        Notification::notify($authorRequest->user_id, 'request_update', [
+            'request_id' => $authorRequest->id,
+            'request_type' => 'author_upgrade',
+            'decision' => 'rejected',
+        ]);
+
+        return response()->json(['message' => 'تم رفض الطلب', 'data' => $authorRequest]);
+    }
+
+    //تعطيل حساب مؤلفة شقرا
+    public function disableAuthor(User $user)
+    {
+        if (! $user->isAuthor()) {
+            return response()->json(['message' => 'هذا المستخدم ليس مؤلفًا'], 404);
+        }
+
+        $user->update(['status' => 'disabled']);
+
+        return response()->json(['message' => 'تم تعطيل حساب المؤلف بنجاح', 'data' => $user]);
+    }
+
+    //تفعيل حساب معطل
+    public function enableAuthor(User $user)
+    {
+        if (! $user->isAuthor()) {
+            return response()->json(['message' => 'هذا المستخدم ليس مؤلفًا'], 404);
+        }
+
+        $user->update(['status' => 'active']);
+
+        return response()->json(['message' => 'تم تفعيل حساب المؤلف بنجاح', 'data' => $user]);
+    }
+}
+
+class AdminBookController extends Controller
+{
+    // اخفاء كتاب
+    public function hide(Book $book)
+    {
+        $book->update(['is_hidden' => true]);
+
+        return response()->json(['message' => 'تم إخفاء الكتاب بنجاح', 'data' => $book]);
+    }
+
+    //اظهار الكتاب م
+    public function unhide(Book $book)
+    {
+        $book->update(['is_hidden' => false]);
+
+        return response()->json(['message' => 'تم إظهار الكتاب بنجاح', 'data' => $book]);
+    }
+
+    public function deleteReview(Book_feedback $review)
+    {
+        $review->clearReview();
+
+        return response()->json(['message' => 'تم حذف نص المراجعة بنجاح', 'data' => $review]);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Book;
+use App\Models\Borrowing;
+use App\Models\Category;
+use App\Models\Order;
+use App\Models\Order_items;
+use App\Models\Reservation;
+use App\Models\User;
+use Illuminate\Http\Request;
+
+class AdminDashboardController extends Controller
+{
+
+    public function index()
+    {
+        $salesRevenue = Order_items::where('status', 'completed')->sum('price_at_purchase');
+        $borrowingRevenue = Borrowing::whereIn('status', ['active', 'returned', 'expired'])->sum('price');
+        $reservationRevenue = Reservation::where('status', 'confirmed')->sum('price');
+        $finesCollected = Borrowing::where('fine_paid', true)->sum('fine_amount');
+        $finesOutstanding = Borrowing::where('fine_paid', false)->where('fine_amount', '>', 0)->sum('fine_amount');
+
+        return response()->json([
+            'data' => [
+                'users_count'            => User::where('is_system_account', false)->count(),
+                'authors_count'          => User::whereHas('roles', fn ($q) => $q->where('name', 'author'))->count(),
+                'books_count'            => Book::count(),
+                'published_books_count'  => Book::published()->count(),
+                'sales_count'            => Order_items::where('status', 'completed')->count(),
+                'borrowings_count'       => Borrowing::whereIn('status', ['active', 'returned', 'expired'])->count(),
+                'reservations_count'     => Reservation::where('status', 'confirmed')->count(),
+                'categories_count'       => Category::count(),
+                'revenue' => [
+                    'sales'        => $salesRevenue,
+                    'borrowings'   => $borrowingRevenue,
+                    'reservations' => $reservationRevenue,
+                    'total'        => $salesRevenue + $borrowingRevenue + $reservationRevenue,
+                ],
+                'fines' => [
+                    'collected'   => $finesCollected,
+                    'outstanding' => $finesOutstanding,
+                ],
+            ],
+        ]);
+    }
+
+    //حصائيات المبيعات
+    public function salesStats(Request $request)
+    {
+        $stats = Order_items::query()
+            ->selectRaw('DATE(completed_at) as date, type, COUNT(*) as items_count, SUM(price_at_purchase) as revenue')
+            ->where('status', 'completed')
+            ->when($request->filled('from'), fn ($q) => $q->whereDate('completed_at', '>=', $request->date('from')))
+            ->when($request->filled('to'), fn ($q) => $q->whereDate('completed_at', '<=', $request->date('to')))
+            ->groupBy('date', 'type')
+            ->orderByDesc('date')
+            ->get();
+
+        return response()->json(['data' => $stats]);
+    }
+
+    //احصائيات الاعارات
+    public function borrowingStats()
+    {
+        $byStatus = Borrowing::query()
+            ->selectRaw('status, COUNT(*) as count')
+            ->groupBy('status')
+            ->get();
+
+        $overdueCount = Borrowing::overdueCandidates()->count();
+
+        return response()->json([
+            'data' => [
+                'by_status' => $byStatus,
+                'overdue_count' => $overdueCount,
+            ],
+        ]);
+    }
+
+    //احصائيات الحجوزات
+    public function reservationStats()
+    {
+        $byStatus = Reservation::query()
+            ->selectRaw('status, period, COUNT(*) as count, SUM(seats_count) as seats')
+            ->groupBy('status', 'period')
+            ->get();
+
+        return response()->json(['data' => $byStatus]);
+    }
+
+    // تقارير الايرادات والدخل المالي
+    public function revenueStats()
+    {
+        return $this->index();
+    }
+
+    // تقارير تحصيل الغرامات
+    public function fineStats()
+    {
+        return response()->json([
+            'data' => [
+                'total_fines'        => Borrowing::where('fine_amount', '>', 0)->sum('fine_amount'),
+                'paid_fines'         => Borrowing::where('fine_paid', true)->sum('fine_amount'),
+                'unpaid_fines'       => Borrowing::where('fine_paid', false)->where('fine_amount', '>', 0)->sum('fine_amount'),
+                'unpaid_fines_count' => Borrowing::where('fine_paid', false)->where('fine_amount', '>', 0)->count(),
+            ],
+        ]);
+    }
+
+    // احصائيات مستحقات المؤلفي
+    public function authorEarningsStats()
+    {
+        $fromSales = Order_items::query()
+            ->join('books', 'books.id', '=', 'order_items.book_id')
+            ->where('order_items.status', 'completed')
+            ->whereNotNull('order_items.author_share_amount_at_purchase')
+            ->selectRaw('books.author_id, SUM(order_items.author_share_amount_at_purchase) as sales_earnings')
+            ->groupBy('books.author_id')
+            ->get();
+
+        $fromBorrowings = Borrowing::query()
+            ->join('books', 'books.id', '=', 'borrowings.book_id')
+            ->whereIn('borrowings.status', ['active', 'returned', 'expired'])
+            ->whereNotNull('borrowings.author_share_amount')
+            ->selectRaw('books.author_id, SUM(borrowings.author_share_amount) as borrowing_earnings')
+            ->groupBy('books.author_id')
+            ->get();
+
+        return response()->json([
+            'data' => [
+                'from_sales'      => $fromSales,
+                'from_borrowings' => $fromBorrowings,
+            ],
+        ]);
+    }
+
+    // مقارنة عمليات Walk-in مقابل المستخدمين المسجلين
+    public function walkInVsRegisteredStats()
+    {
+        return response()->json([
+            'data' => [
+                'sales' => [
+                    'walk_in'    => Order::where('is_walk_in', true)->where('status', 'confirmed')->count(),
+                    'registered' => Order::where('is_walk_in', false)->where('status', 'confirmed')->count(),
+                ],
+                'borrowings' => [
+                    'walk_in'    => Borrowing::where('is_walk_in', true)->whereIn('status', ['active', 'returned', 'expired'])->count(),
+                    'registered' => Borrowing::where('is_walk_in', false)->whereIn('status', ['active', 'returned', 'expired'])->count(),
+                ],
+                'reservations' => [
+                    'walk_in'    => Reservation::where('is_walk_in', true)->where('status', 'confirmed')->count(),
+                    'registered' => Reservation::where('is_walk_in', false)->where('status', 'confirmed')->count(),
+                ],
+            ],
+        ]);
+    }
+
+    //FR-75 / BR-19: الكتب ذات النشاط المنخفض
+    public function lowActivityBooks(Request $request)
+    {
+        $since = now()->subDays(30);
+
+        $activeBookIdsFromSales = Order_items::where('status', 'completed')
+            ->where('completed_at', '>=', $since)
+            ->pluck('book_id');
+
+        $activeBookIdsFromBorrowings = Borrowing::whereIn('status', ['active', 'returned'])
+            ->where('created_at', '>=', $since)
+            ->pluck('book_id');
+
+        $activeBookIds = $activeBookIdsFromSales->merge($activeBookIdsFromBorrowings)->unique();
+
+        $lowActivityBooks = Book::published()
+            ->whereNotIn('id', $activeBookIds)
+            ->with('categories')
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $lowActivityBooks]);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Role;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
+
+class AdminEmployeeController extends Controller
+{
+    private const EMPLOYEE_ROLES = ['library_employee', 'author_content_employee'];
+
+    //عرض قائمة الموظفين
+    public function index(Request $request)
+    {
+        $employees = User::query()
+            ->whereHas('roles', fn($q) => $q->whereIn('name', self::EMPLOYEE_ROLES))
+            ->with('roles')
+            ->when($request->filled('type'), function ($q) use ($request) {
+                $q->whereHas('roles', fn($r) => $r->where('name', $request->string('type')));
+            })
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $employees]);
+    }
+
+    //إضافة موظف جديد وتحديد نوعه
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'full_name'     => ['required', 'string', 'max:255'],
+            'username'      => ['required', 'string', 'max:255', 'unique:users,username'],
+            'phone'         => ['required', 'string', 'max:20', 'unique:users,phone'],
+            'email'         => ['required', 'email', 'max:255', 'unique:users,email'],
+            'password'      => ['required', 'string', 'min:8'],
+            'birthday'      => ['required', 'date', 'before:today'],
+            'employee_type' => ['required', Rule::in(self::EMPLOYEE_ROLES)],
+        ]);
+
+        $user = User::create([
+            'full_name' => $validated['full_name'],
+            'username'  => $validated['username'],
+            'phone'     => $validated['phone'],
+            'email'     => $validated['email'],
+            'password'  => $validated['password'],
+            'birthday'  => $validated['birthday'],
+            'status'    => 'active',
+        ]);
+
+        $role = Role::firstOrCreate(['name' => $validated['employee_type']]);
+        $user->roles()->attach($role->id);
+
+        return response()->json([
+            'message' => 'تم إضافة الموظف بنجاح',
+            'data' => $user->load('roles'),
+        ], 201);
+    }
+
+    //تعديل بيانات وصلاحيات موظف
+    public function update(Request $request, User $user)
+    {
+        if (! $user->roles()->whereIn('name', self::EMPLOYEE_ROLES)->exists()) {
+            return response()->json(['message' => 'هذا المستخدم ليس موظفًا'], 404);
+        }
+
+        $validated = $request->validate([
+            'full_name'     => ['sometimes', 'string', 'max:255'],
+            'phone'         => ['sometimes', 'string', 'max:20', Rule::unique('users', 'phone')->ignore($user->id)],
+            'email'         => ['sometimes', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
+            'employee_type' => ['sometimes', Rule::in(self::EMPLOYEE_ROLES)],
+        ]);
+
+        $user->update(collect($validated)->except('employee_type')->toArray());
+
+        if (isset($validated['employee_type'])) {
+            $newRole = Role::firstOrCreate(['name' => $validated['employee_type']]);
+            $user->roles()->detach(
+                Role::whereIn('name', self::EMPLOYEE_ROLES)->pluck('id')
+            );
+            $user->roles()->attach($newRole->id);
+        }
+
+        return response()->json(['message' => 'تم تحديث بيانات الموظف', 'data' => $user->load('roles')]);
+    }
+
+    // حذف حساب موظف
+
+    public function destroy(User $user)
+    {
+        if (! $user->roles()->whereIn('name', self::EMPLOYEE_ROLES)->exists()) {
+            return response()->json(['message' => 'هذا المستخدم ليس موظفًا'], 404);
+        }
+
+        $user->roles()->detach();
+        $user->delete();
+
+        return response()->json(['message' => 'تم حذف الموظف بنجاح']);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\System_setting;
+use Illuminate\Http\Request;
+
+class AdminSettingsController extends Controller
+{
+    /**
+     * مفاتيح الإعدادات المسموح عرضها للزائر (Guest) - معلومات عامة عن المكتبة.
+     */
+    private const PUBLIC_KEYS = ['library_name', 'library_address', 'library_phone', 'working_hours'];
+
+    /**
+     * عرض المعلومات العامة عن المكتبة (لصفحة "معلومات المكتبة" التي يراها Guest).
+     */
+    public function publicInfo()
+    {
+        $settings = System_setting::whereIn('key', self::PUBLIC_KEYS)->pluck('value', 'key');
+
+        return response()->json(['data' => $settings]);
+    }
+
+    /**
+     * FR-49: استعلام عن نسبة أرباح المؤلفين الحالية.
+     */
+    public function getAuthorRevenuePercent()
+    {
+        return response()->json([
+            'data' => [
+                'author_revenue_percent' => (float) System_setting::getValue('author_revenue_percent', 0),
+            ],
+        ]);
+    }
+
+    /**
+     * FR-49: تعديل نسبة أرباح المؤلفين. لا تؤثر على العمليات السابقة (BR-16: تُحفظ كـ snapshot).
+     */
+    public function setAuthorRevenuePercent(Request $request)
+    {
+        $validated = $request->validate([
+            'value' => ['required', 'numeric', 'min:0', 'max:100'],
+        ]);
+
+        $setting = System_setting::setValue(
+            'author_revenue_percent',
+            (string) $validated['value'],
+            $request->user()->id
+        );
+
+        return response()->json(['message' => 'تم تحديث نسبة أرباح المؤلفين', 'data' => $setting]);
+    }
+
+    /**
+     * عرض شجرة كافة إعدادات النظام.
+     */
+    public function index()
+    {
+        return response()->json(['data' => System_setting::with('updatedBy')->get()]);
+    }
+
+    /**
+     * تعديل قيمة إعداد محدد بالنظام عبر المفتاح.
+     */
+    public function update(Request $request, string $key)
+    {
+        $validated = $request->validate([
+            'value' => ['required', 'string'],
+        ]);
+
+        $setting = System_setting::setValue($key, $validated['value'], $request->user()->id);
+
+        return response()->json(['message' => 'تم تحديث الإعداد بنجاح', 'data' => $setting]);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\Borrowing;
+use App\Models\Order;
+use App\Models\User;
+use Illuminate\Http\Request;
+
+class AdminUserController extends Controller
+{
+    //عرض كافة المستخدمين المسجلين (عدا حساب النظام Walk-in Customer)
+    public function index(Request $request)
+    {
+        $users = User::query()
+            ->where('is_system_account', false)
+            ->when($request->filled('status'), fn ($q) => $q->where('status', $request->string('status')))
+            ->when($request->filled('role'), function ($q) use ($request) {
+                $q->whereHas('roles', fn ($r) => $r->where('name', $request->string('role')));
+            })
+            ->when($request->filled('search'), function ($q) use ($request) {
+                $search = $request->string('search');
+                $q->where(function ($sub) use ($search) {
+                    $sub->where('full_name', 'like', "%{$search}%")
+                        ->orWhere('username', 'like', "%{$search}%")
+                        ->orWhere('email', 'like', "%{$search}%");
+                });
+            })
+            ->with('roles')
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $users]);
+    }
+
+    //عرض بيانات مستخدم محدد
+    public function show(User $user)
+    {
+        $user->load('roles');
+
+        return response()->json([
+            'data' => [
+                'user' => $user,
+                'has_active_obligations' => $this->hasActiveObligations($user),
+            ],
+        ]);
+    }
+
+    //تعطيل حساب مستخدم
+    public function disable(User $user)
+    {
+        if ($user->is_system_account) {
+            return response()->json(['message' => 'لا يمكن تعطيل هذا الحساب'], 422);
+        }
+
+        $user->update(['status' => 'disabled']);
+
+        return response()->json(['message' => 'تم تعطيل الحساب بنجاح', 'data' => $user]);
+    }
+
+    // تفعيل حساب مستخدم
+    public function enable(User $user)
+    {
+        $user->update(['status' => 'active']);
+
+        return response()->json(['message' => 'تم تفعيل الحساب بنجاح', 'data' => $user]);
+    }
+
+    //حذف حساب مستخدم نهائي
+    public function destroy(User $user)
+    {
+        if ($user->is_system_account) {
+            return response()->json(['message' => 'لا يمكن حذف هذا الحساب'], 422);
+        }
+
+        if ($this->hasActiveObligations($user)) {
+            return response()->json([
+                'message' => 'لا يمكن حذف الحساب بسبب وجود التزامات نشطة (مبالغ مستحقة / غرامات غير مدفوعة / كتب ورقية لم تُعاد)',
+            ], 422);
+        }
+
+        $user->delete();
+
+        return response()->json(['message' => 'تم حذف الحساب بنجاح']);
+    }
+
+    //تحقق من وجود التزامات نشطة تمنع حذف الحساب
+    private function hasActiveObligations(User $user): bool
+    {
+        $unpaidFines = Borrowing::where('user_id', $user->id)
+            ->where('fine_amount', '>', 0)
+            ->where('fine_paid', false)
+            ->exists();
+
+        $unreturnedPhysicalBooks = Borrowing::where('user_id', $user->id)
+            ->where('book_type', 'physical')
+            ->where('status', 'active')
+            ->exists();
+
+        $pendingDues = Order::where('user_id', $user->id)
+            ->whereIn('status', ['pending', 'confirmed'])
+            ->exists();
+
+        return $unpaidFines || $unreturnedPhysicalBooks || $pendingDues;
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api\Auth;
+
+use App\Http\Controllers\Controller;
+use App\Models\Role;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+
+class AuthController extends Controller
+{
+    //تسجيل حساب
+    public function register(Request $request)
+    {
+        $validated = $request->validate([
+            'full_name' => ['required', 'string', 'max:255'],
+            'username'  => ['required', 'string', 'max:255', 'unique:users,username'],
+            'phone'     => ['required', 'string', 'max:20', 'unique:users,phone'],
+            'email'     => ['required', 'email', 'max:255', 'unique:users,email'],
+            'password'  => ['required', 'string', 'min:8', 'confirmed'],
+            'birthday'  => ['required', 'date', 'before:today'],
+            'avatar'    => ['nullable', 'image', 'max:4096'],
+        ]);
+
+        if ($request->hasFile('avatar')) {
+            $validated['avatar'] = $request->file('avatar')->store('avatars', 'public');
+        }
+
+        $user = User::create([
+            'full_name' => $validated['full_name'],
+            'username'  => $validated['username'],
+            'phone'     => $validated['phone'],
+            'email'     => $validated['email'],
+            'password'  => $validated['password'],
+            'birthday'  => $validated['birthday'],
+            'avatar'    => $validated['avatar'] ?? null,
+            'status'    => 'active',
+        ]);
+
+        $readerRole = Role::firstOrCreate(['name' => 'reader']);
+        $user->roles()->attach($readerRole->id);
+
+        $token = $user->createToken('auth_token')->plainTextToken;
+
+        return response()->json([
+            'message' => 'تم إنشاء الحساب بنجاح',
+            'data' => [
+                'user'  => $user->load('roles'),
+                'token' => $token,
+            ],
+        ], 201);
+    }
+
+    //تسجيل الدخول
+    public function login(Request $request)
+    {
+        $validated = $request->validate([
+            'login'    => ['required', 'string'],
+            'password' => ['required', 'string'],
+        ]);
+
+        $user = User::where('email', $validated['login'])
+            ->orWhere('username', $validated['login'])
+            ->first();
+
+        if (! $user || ! Hash::check($validated['password'], $user->password)) {
+            return response()->json([
+                'message' => 'بيانات الدخول غير صحيحة',
+            ], 401);
+        }
+
+        if ($user->status === 'disabled') {
+            return response()->json([
+                'message' => 'هذا الحساب معطّل، يرجى التواصل مع إدارة المكتبة',
+            ], 403);
+        }
+
+        $user->forceFill(['last_login_at' => now()])->save();
+
+        $token = $user->createToken('auth_token')->plainTextToken;
+
+        return response()->json([
+            'message' => 'تم تسجيل الدخول بنجاح',
+            'data' => [
+                'user'  => $user->load('roles'),
+                'token' => $token,
+            ],
+        ]);
+    }
+
+    //تسجيل الخروج
+    public function logout(Request $request)
+    {
+        $request->user()->currentAccessToken()->delete();
+
+        return response()->json([
+            'message' => 'تم تسجيل الخروج بنجاح',
+        ]);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api\Auth;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Profile\UpdatePasswordRequest;
+use App\Http\Requests\Profile\UpdateProfileRequest;
+use App\Models\Borrowing;
+use App\Models\Order;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+
+class ProfileController extends Controller
+{
+    /**
+     * FR-03: عرض بيانات حساب المستخدم الحالي.
+     */
+    public function show(Request $request)
+    {
+        return response()->json(['data' => $request->user()->load('roles')]);
+    }
+
+    /**
+     * FR-03: تعديل البيانات الشخصية (الاسم، الهاتف، البريد، تاريخ الميلاد...).
+     */
+    public function update(UpdateProfileRequest $request)
+    {
+        $request->user()->update($request->validated());
+
+        return response()->json(['message' => 'تم تحديث البيانات بنجاح', 'data' => $request->user()->fresh()]);
+    }
+
+    /**
+     * FR-03: رفع أو تغيير الصورة الشخصية.
+     */
+    public function updateAvatar(Request $request)
+    {
+        $request->validate([
+            'avatar' => ['required', 'file', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
+        ]);
+
+        $path = $request->file('avatar')->store('avatars', 'public');
+        $request->user()->update(['avatar' => $path]);
+
+        return response()->json(['message' => 'تم تحديث الصورة الشخصية بنجاح', 'data' => $request->user()->fresh()]);
+    }
+
+    /**
+     * FR-03: تغيير كلمة المرور للمستخدم (يتطلب كلمة المرور الحالية).
+     */
+    public function updatePassword(UpdatePasswordRequest $request)
+    {
+        $request->user()->update(['password' => Hash::make($request->validated('password'))]);
+
+        return response()->json(['message' => 'تم تغيير كلمة المرور بنجاح']);
+    }
+
+    /**
+     * FR-04: حذف الحساب نهائيًا — بشرط عدم وجود التزامات نشطة (نفس تعريف
+     * AdminUserController::hasActiveObligations لضمان اتساق القاعدة بين حذف المستخدم لنفسه وحذف الأدمن له).
+     */
+    public function destroy(Request $request)
+    {
+        $user = $request->user();
+
+        if ($this->hasActiveObligations($user)) {
+            return response()->json([
+                'message' => 'لا يمكن حذف الحساب بسبب وجود التزامات نشطة (مبالغ مستحقة / غرامات غير مدفوعة / كتب ورقية لم تُعاد)',
+            ], 422);
+        }
+
+        $user->tokens()->delete();
+        $user->delete();
+
+        return response()->json(['message' => 'تم حذف الحساب بنجاح']);
+    }
+
+    private function hasActiveObligations(User $user): bool
+    {
+        $unpaidFines = Borrowing::where('user_id', $user->id)
+            ->where('fine_amount', '>', 0)
+            ->where('fine_paid', false)
+            ->exists();
+
+        $unreturnedPhysicalBooks = Borrowing::where('user_id', $user->id)
+            ->where('book_type', 'physical')
+            ->where('status', 'active')
+            ->exists();
+
+        $pendingDues = Order::where('user_id', $user->id)
+            ->whereIn('status', ['pending', 'confirmed'])
+            ->exists();
+
+        return $unpaidFines || $unreturnedPhysicalBooks || $pendingDues;
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api\Employee;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\AuthorContentEmployee\RejectBookRequest;
+use App\Http\Requests\AuthorContentEmployee\RequestBookChangesRequest;
+use App\Models\Author_request;
+use App\Models\Book;
+use App\Models\Notification;
+use Illuminate\Http\Request;
+
+class AuthorContentEmployeeController extends Controller
+{
+    /**
+     * FR-43: الحقول المسموح تحديثها بالكتاب عبر طلب تعديل مقبول.
+     */
+    private const MODIFIABLE_BOOK_FIELDS = [
+        'title', 'description', 'publisher', 'publisher_year', 'language',
+        'page_count', 'price_physical', 'price_digital',
+    ];
+
+    // ------------------------------------------------------------------
+    // FR-39: طلبات ترقية Reader -> Author
+    // ------------------------------------------------------------------
+
+    /**
+     * عرض طلبات الترقية بانتظار المراجعة.
+     */
+    public function authorRequests(Request $request)
+    {
+        $requests = Author_request::query()
+            ->upgrade()
+            ->where('status', 'pending')
+            ->with('user')
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $requests]);
+    }
+
+    /**
+     * FR-39: موافقة مبدئية وتحويل الطلب للمدير.
+     */
+    public function preApprove(Request $request, Author_request $authorRequest)
+    {
+        $this->guardUpgradePending($authorRequest);
+
+        $authorRequest->update([
+            'status' => 'pre_approved',
+            'reviewed_by' => $request->user()->id,
+            'reviewed_at' => now(),
+        ]);
+
+        Notification::notify($authorRequest->user_id, 'request_update', [
+            'request_id' => $authorRequest->id, 'request_type' => 'author_upgrade', 'decision' => 'pre_approved',
+        ]);
+
+        return response()->json(['message' => 'تمت الموافقة المبدئية على الطلب', 'data' => $authorRequest]);
+    }
+
+    /**
+     * FR-39: رفض طلب الانضمام كمؤلف.
+     */
+    public function reject(Request $request, Author_request $authorRequest)
+    {
+        $this->guardUpgradePending($authorRequest);
+
+        $authorRequest->update([
+            'status' => 'rejected_by_employee',
+            'reviewed_by' => $request->user()->id,
+            'reviewed_at' => now(),
+        ]);
+
+        Notification::notify($authorRequest->user_id, 'request_update', [
+            'request_id' => $authorRequest->id, 'request_type' => 'author_upgrade', 'decision' => 'rejected',
+        ]);
+
+        return response()->json(['message' => 'تم رفض الطلب', 'data' => $authorRequest]);
+    }
+
+    /**
+     * FR-39: طلب تعديلات على طلب الانضمام (المستخدم يلغي ويعيد التقديم — لا يوجد endpoint تعديل مباشر).
+     */
+    public function requestChanges(Request $request, Author_request $authorRequest)
+    {
+        $this->guardUpgradePending($authorRequest);
+
+        $authorRequest->update([
+            'status' => 'changes_requested',
+            'reviewed_by' => $request->user()->id,
+            'reviewed_at' => now(),
+        ]);
+
+        Notification::notify($authorRequest->user_id, 'request_update', [
+            'request_id' => $authorRequest->id, 'request_type' => 'author_upgrade', 'decision' => 'changes_requested',
+        ]);
+
+        return response()->json(['message' => 'تم طلب تعديل على الطلب', 'data' => $authorRequest]);
+    }
+
+    // ------------------------------------------------------------------
+    // FR-42: مراجعة الكتب المقدمة للنشر
+    // ------------------------------------------------------------------
+
+    /**
+     * عرض الكتب بانتظار التدقيق (المرسلة حديثًا أو قيد المراجعة حاليًا).
+     */
+    public function pendingBooks(Request $request)
+    {
+        $books = Book::query()
+            ->whereIn('publish_status', ['submitted', 'under_review'])
+            ->with(['author', 'categories'])
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $books]);
+    }
+
+    /**
+     * FR-42: قفل الكتاب وقيد المراجعة لمنع تعارض الموظفين (Submitted -> Under Review).
+     */
+    public function startReview(Request $request, Book $book)
+    {
+        if ($book->publish_status !== 'submitted') {
+            abort(422, 'هذا الكتاب ليس بانتظار المراجعة');
+        }
+
+        $book->update([
+            'publish_status' => 'under_review',
+            'reviewed_by' => $request->user()->id,
+        ]);
+
+        return response()->json(['message' => 'تم قفل الكتاب لمراجعتك', 'data' => $book]);
+    }
+
+    /**
+     * FR-42: الموافقة على نشر الكتاب (Under Review -> Published مباشرة، لا توجد حالة Approved منفصلة بالـDB).
+     */
+    public function approveBook(Request $request, Book $book)
+    {
+        $this->guardBookUnderReview($request, $book);
+
+        $book->update([
+            'publish_status' => 'published',
+            'published_at' => now(),
+            'reviewed_by' => $request->user()->id,
+        ]);
+
+        $this->notifyBookAuthor($book, 'approved');
+
+        return response()->json(['message' => 'تمت الموافقة على الكتاب ونشره', 'data' => $book]);
+    }
+
+    /**
+     * FR-44: رفض نشر الكتاب مع سبب اختياري.
+     */
+    public function rejectBook(RejectBookRequest $request, Book $book)
+    {
+        $this->guardBookUnderReview($request, $book);
+
+        $book->update([
+            'publish_status' => 'rejected',
+            'reviewed_by' => $request->user()->id,
+            'rejection_reason' => $request->validated('rejection_reason'),
+        ]);
+
+        $this->notifyBookAuthor($book, 'rejected');
+
+        return response()->json(['message' => 'تم رفض الكتاب', 'data' => $book]);
+    }
+
+    /**
+     * FR-42: طلب تعديلات بالمحتوى قبل النشر (Under Review -> Changes Required).
+     */
+    public function requestBookChanges(RequestBookChangesRequest $request, Book $book)
+    {
+        $this->guardBookUnderReview($request, $book);
+
+        $book->update([
+            'publish_status' => 'changes_required',
+            'reviewed_by' => $request->user()->id,
+            'rejection_reason' => $request->validated('notes'),
+        ]);
+
+        $this->notifyBookAuthor($book, 'changes_required');
+
+        return response()->json(['message' => 'تم طلب تعديلات على الكتاب', 'data' => $book]);
+    }
+
+    // ------------------------------------------------------------------
+    // FR-43: طلبات تعديل كتب منشورة
+    // ------------------------------------------------------------------
+
+    /**
+     * عرض طلبات التعديل على كتب منشورة بانتظار المراجعة.
+     */
+    public function modificationRequests(Request $request)
+    {
+        $requests = Author_request::query()
+            ->bookModification()
+            ->where('status', 'pending')
+            ->with(['user', 'book'])
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $requests]);
+    }
+
+    /**
+     * FR-43: قبول التعديل — يُطبَّق تلقائيًا على الكتاب (فقط الحقول المسموحة).
+     */
+    public function approveModification(Request $request, Author_request $authorRequest)
+    {
+        $this->guardModificationPending($authorRequest);
+
+        $changes = collect($authorRequest->changes ?? [])->only(self::MODIFIABLE_BOOK_FIELDS)->toArray();
+
+        if (! empty($changes) && $authorRequest->book) {
+            $authorRequest->book->update($changes);
+        }
+
+        $authorRequest->update([
+            'status' => 'approved',
+            'reviewed_by' => $request->user()->id,
+            'reviewed_at' => now(),
+        ]);
+
+        Notification::notify($authorRequest->user_id, 'request_update', [
+            'request_id' => $authorRequest->id, 'request_type' => 'book_modification',
+            'book_id' => $authorRequest->book_id, 'decision' => 'approved',
+        ]);
+
+        return response()->json(['message' => 'تم قبول التعديل وتحديث الكتاب', 'data' => $authorRequest->fresh()]);
+    }
+
+    /**
+     * FR-43: رفض طلب التعديل.
+     */
+    public function rejectModification(Request $request, Author_request $authorRequest)
+    {
+        $this->guardModificationPending($authorRequest);
+
+        $authorRequest->update([
+            'status' => 'rejected_by_employee',
+            'reviewed_by' => $request->user()->id,
+            'reviewed_at' => now(),
+        ]);
+
+        Notification::notify($authorRequest->user_id, 'request_update', [
+            'request_id' => $authorRequest->id, 'request_type' => 'book_modification',
+            'book_id' => $authorRequest->book_id, 'decision' => 'rejected',
+        ]);
+
+        return response()->json(['message' => 'تم رفض طلب التعديل', 'data' => $authorRequest]);
+    }
+
+    // ------------------------------------------------------------------
+
+    private function guardUpgradePending(Author_request $authorRequest): void
+    {
+        if (! $authorRequest->isUpgrade() || $authorRequest->status !== 'pending') {
+            abort(422, 'هذا الطلب غير قابل لهذا الإجراء حاليًا');
+        }
+    }
+
+    private function guardModificationPending(Author_request $authorRequest): void
+    {
+        if ($authorRequest->isUpgrade() || $authorRequest->status !== 'pending') {
+            abort(422, 'هذا الطلب غير قابل لهذا الإجراء حاليًا');
+        }
+    }
+
+    private function guardBookUnderReview(Request $request, Book $book): void
+    {
+        if ($book->publish_status !== 'under_review') {
+            abort(422, 'هذا الكتاب ليس قيد المراجعة');
+        }
+
+        if ($book->reviewed_by !== null && $book->reviewed_by !== $request->user()->id) {
+            abort(403, 'هذا الكتاب قيد مراجعة موظف آخر');
+        }
+    }
+
+    private function notifyBookAuthor(Book $book, string $decision): void
+    {
+        $recipientId = $book->author_id ?? $book->submitted_by;
+
+        if ($recipientId !== null) {
+            Notification::notify($recipientId, 'request_update', [
+                'book_id' => $book->id, 'request_type' => 'book_publish', 'decision' => $decision,
+            ]);
+        }
+    }
+}
+class LibraryEmployeeController extends Controller
+{
+    public function __construct(private readonly BookProvisioningService $provisioning)
+    {
+    }
+
+    /**
+     * FR-20/BR-08: عرض عمليات الدفع بانتظار التحقق اليدوي.
+     */
+    public function pendingPayments(Request $request)
+    {
+        $payments = Payment::where('status', 'pending')
+            ->with(['user', 'payable'])
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $payments]);
+    }
+
+    /**
+     * FR-19/FR-20/BR-08: قبول عملية الدفع — يفعّل العملية المرتبطة (شراء/إعارة/حجز) FR-73 ينبّه المستخدم.
+     */
+    public function approvePayment(Payment $payment)
+    {
+        if ($payment->status !== 'pending') {
+            abort(422, 'هذه العملية ليست بانتظار التحقق');
+        }
+
+        DB::transaction(function () use ($payment) {
+            $payment->update(['status' => 'verified']);
+            $this->activatePayable($payment);
+        });
+
+        return response()->json(['message' => 'تم قبول عملية الدفع بنجاح', 'data' => $payment->fresh()]);
+    }
+
+    /**
+     * FR-19/FR-20/BR-08: رفض عملية الدفع — يرفض العملية المرتبطة ويحرر أي نسخة فيزيائية محجوزة لها.
+     */
+    public function rejectPayment(Payment $payment)
+    {
+        if ($payment->status !== 'pending') {
+            abort(422, 'هذه العملية ليست بانتظار التحقق');
+        }
+
+        DB::transaction(function () use ($payment) {
+            $payment->update(['status' => 'rejected']);
+            $this->rejectPayable($payment);
+        });
+
+        return response()->json(['message' => 'تم رفض عملية الدفع', 'data' => $payment->fresh()]);
+    }
+
+    /**
+     * FR-17: تغيير حالة طلب الكتاب الورقي إلى "جاهز للاستلام" بعد تجهيزه.
+     */
+    public function markOrderItemReady(\App\Models\Order_items $orderItem)
+    {
+        if ($orderItem->type !== 'physical' || $orderItem->status !== 'confirmed') {
+            abort(422, 'هذا العنصر غير قابل للتجهيز حاليًا');
+        }
+
+        $orderItem->update(['status' => 'ready', 'ready_at' => now()]);
+
+        return response()->json(['message' => 'تم تجهيز الطلب، بانتظار استلام المستخدم', 'data' => $orderItem]);
+    }
+
+    /**
+     * FR-65: عرض جميع عمليات الإعارة الجارية والمعلقة.
+     */
+    public function borrowings(Request $request)
+    {
+        $borrowings = Borrowing::query()
+            ->when($request->filled('status'), fn ($q) => $q->where('status', $request->string('status')))
+            ->with(['user', 'book'])
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $borrowings]);
+    }
+
+    /**
+     * FR-26: تسجيل إرجاع النسخة الورقية، حساب الغرامة عند التأخير — بدون غرامة للتالف (Out of Scope).
+     */
+    public function registerReturn(RegisterReturnRequest $request, Borrowing $borrowing)
+    {
+        if ($borrowing->book_type !== 'physical' || $borrowing->status !== 'active') {
+            abort(422, 'هذه الإعارة غير قابلة لتسجيل إرجاع حاليًا');
+        }
+
+        $isDamaged = $request->boolean('is_damaged');
+
+        DB::transaction(function () use ($borrowing, $isDamaged) {
+            $fine = $isDamaged ? 0.0 : $borrowing->calculateFine();
+
+            $borrowing->update([
+                'status' => 'returned',
+                'returned_at' => now(),
+                'fine_amount' => $fine > 0 ? $fine : null,
+                'fine_days_late' => $fine > 0 ? $borrowing->daysLateAttribute() : null,
+            ]);
+
+            if ($borrowing->physical_copy_id && $borrowing->physicalCopy) {
+                $borrowing->physicalCopy->update([
+                    'status' => $isDamaged ? 'damaged' : 'available',
+                    'status_changed_at' => now(),
+                ]);
+            }
+        });
+
+        return response()->json(['message' => 'تم تسجيل الإرجاع بنجاح', 'data' => $borrowing->fresh()]);
+    }
+
+    /**
+     * FR-65: عرض كل النسخ الورقية لكتاب (بيع وإعارة).
+     */
+    public function copies(Request $request, Book $book)
+    {
+        $copies = $book->physicalCopies()
+            ->when($request->filled('purpose'), fn ($q) => $q->where('purpose', $request->string('purpose')))
+            ->when($request->filled('status'), fn ($q) => $q->where('status', $request->string('status')))
+            ->latest()
+            ->paginate($request->integer('per_page', 50));
+
+        return response()->json(['data' => $copies]);
+    }
+
+    /**
+     * FR-57/FR-65: إضافة نسخة فيزيائية جديدة (بيع أو إعارة) لكتاب.
+     */
+    public function addCopy(AddCopyRequest $request, Book $book)
+    {
+        $copy = PhysicalCopy::create([
+            'book_id' => $book->id,
+            'purpose' => $request->validated('purpose'),
+            'copy_code' => $request->validated('copy_code'),
+            'status' => 'available',
+        ]);
+
+        return response()->json(['message' => 'تمت إضافة النسخة بنجاح', 'data' => $copy], 201);
+    }
+
+    /**
+     * FR-65: تعديل حالة نسخة فيزيائية (متاحة، تالفة، مفقودة).
+     */
+    public function updateCopy(UpdateCopyRequest $request, PhysicalCopy $copy)
+    {
+        $copy->update([
+            'status' => $request->validated('status'),
+            'status_changed_at' => now(),
+        ]);
+
+        return response()->json(['message' => 'تم تحديث حالة النسخة بنجاح', 'data' => $copy]);
+    }
+
+    /**
+     * FR-33/FR-65: عرض قائمة الغرامات المستحقة على القراء (نهائية غير مسددة + تقديرية للمتأخرة حاليًا).
+     */
+    public function fines()
+    {
+        $finalized = Borrowing::query()
+            ->whereNotNull('fine_amount')
+            ->where('fine_amount', '>', 0)
+            ->where('fine_paid', false)
+            ->with(['user', 'book'])
+            ->get()
+            ->map(fn (Borrowing $b) => [
+                'borrowing_id' => $b->id,
+                'user' => $b->user,
+                'book' => $b->book,
+                'amount' => (float) $b->fine_amount,
+                'days_late' => $b->fine_days_late,
+                'is_estimated' => false,
+            ]);
+
+        $estimated = Borrowing::query()
+            ->overdueCandidates()
+            ->with(['user', 'book'])
+            ->get()
+            ->map(fn (Borrowing $b) => [
+                'borrowing_id' => $b->id,
+                'user' => $b->user,
+                'book' => $b->book,
+                'amount' => $b->calculateFine(),
+                'days_late' => $b->daysLateAttribute(),
+                'is_estimated' => true,
+            ]);
+
+        return response()->json(['data' => $finalized->concat($estimated)->values()]);
+    }
+
+    /**
+     * FR-65: تسديد الغرامة وإغلاق ذمة القارئ.
+     */
+    public function markFinePaid(Borrowing $borrowing)
+    {
+        if (! $borrowing->fine_amount || $borrowing->fine_amount <= 0) {
+            abort(422, 'لا توجد غرامة مستحقة على هذه الإعارة');
+        }
+
+        if ($borrowing->fine_paid) {
+            abort(422, 'الغرامة مسدَّدة مسبقًا');
+        }
+
+        $borrowing->update(['fine_paid' => true]);
+
+        return response()->json(['message' => 'تم تسديد الغرامة بنجاح', 'data' => $borrowing]);
+    }
+
+    /**
+     * FR-65: متابعة كافة الحجوزات اليومية للمقاعد.
+     */
+    public function reservations(Request $request)
+    {
+        $reservations = Reservation::query()
+            ->when($request->filled('date'), fn ($q) => $q->whereDate('reservation_date', $request->input('date')))
+            ->when($request->filled('status'), fn ($q) => $q->where('status', $request->string('status')))
+            ->with('user')
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $reservations]);
+    }
+
+    /**
+     * FR-45/FR-46: إدخال كتاب يدوي بدون ربطه بحساب مؤلف — يُنشر مباشرة بدون موافقة Admin.
+     */
+    public function createManualBook(CreateManualBookRequest $request)
+    {
+        $employee = $request->user();
+        $data = $request->validated();
+
+        $coverPath = $request->file('cover_image')->store('books/covers', 'public');
+        $digitalPath = $request->hasFile('digital_file')
+            ? $request->file('digital_file')->store('books/digital', 'local')
+            : null;
+
+        $book = DB::transaction(function () use ($employee, $data, $coverPath, $digitalPath) {
+            $book = Book::create([
+                'author_id' => null,
+                'author_name' => $data['author_name'],
+                'title' => $data['title'],
+                'description' => $data['description'],
+                'cover_image' => $coverPath,
+                'publisher' => $data['publisher'],
+                'publisher_year' => $data['publisher_year'] ?? null,
+                'language' => $data['language'],
+                'book_type' => $data['book_type'],
+                'page_count' => $data['page_count'] ?? null,
+                'publish_status' => 'published',
+                'is_hidden' => false,
+                'price_physical' => $data['price_physical'] ?? null,
+                'price_digital' => $data['price_digital'] ?? null,
+                'digital_file' => $digitalPath,
+                'created_by' => $employee->id,
+                'published_at' => now(),
+            ]);
+
+            $book->categories()->sync($data['category_ids']);
+            $this->provisioning->syncPhysicalCopies($book, $data['sale_copies_count'] ?? 0, $data['borrow_copies_count'] ?? 0);
+            $this->provisioning->syncBorrowOptions($book, $data['borrow_options'] ?? null);
+
+            return $book;
+        });
+
+        return response()->json([
+            'message' => 'تم إدخال الكتاب ونشره بنجاح',
+            'data' => $book->load(['categories', 'borrow_option', 'physicalCopies']),
+        ], 201);
+    }
+
+    /**
+     * FR-73 "Operation Confirmation": تفعيل العملية المرتبطة حسب نوعها + إشعار المستخدم.
+     */
+    private function activatePayable(Payment $payment): void
+    {
+        $payable = $payment->payable;
+
+        if ($payable instanceof Order) {
+            $payable->update(['status' => 'confirmed']);
+            $payable->items()->update(['status' => 'confirmed']);
+
+            Notification::notify($payable->user_id, 'operation_confirmation', [
+                'order_id' => $payable->id, 'kind' => 'purchase', 'decision' => 'approved',
+            ]);
+        } elseif ($payable instanceof Borrowing) {
+            $authorRevenuePercent = (float) System_setting::getValue('author_revenue_percent', 0);
+            $authorSharePercent = $payable->book?->author_id !== null ? $authorRevenuePercent : null;
+            $authorShareAmount = $authorSharePercent !== null
+                ? round((float) $payable->price * $authorSharePercent / 100, 2)
+                : null;
+
+            $payable->update([
+                'status' => 'active',
+                'start_date' => now()->toDateString(),
+                'end_date' => now()->addDays($payable->duration_days)->toDateString(),
+                'author_revenue_percent_snapshot' => $authorSharePercent,
+                'author_share_amount' => $authorShareAmount,
+            ]);
+
+            Notification::notify($payable->user_id, 'operation_confirmation', [
+                'borrowing_id' => $payable->id, 'kind' => 'borrowing', 'decision' => 'approved',
+            ]);
+        } elseif ($payable instanceof Reservation) {
+            $payable->update(['status' => 'confirmed']);
+
+            Notification::notify($payable->user_id, 'operation_confirmation', [
+                'reservation_id' => $payable->id, 'kind' => 'reservation', 'decision' => 'approved',
+            ]);
+        }
+    }
+
+    /**
+     * FR-73 "Operation Confirmation": رفض العملية المرتبطة + تحرير أي نسخة فيزيائية محجوزة + إشعار.
+     */
+    private function rejectPayable(Payment $payment): void
+    {
+        $payable = $payment->payable;
+
+        if ($payable instanceof Order) {
+            $payable->update(['status' => 'rejected']);
+            $payable->items()->update(['status' => 'rejected']);
+
+            foreach ($payable->items as $item) {
+                if ($item->physical_copy_id) {
+                    $item->physicalCopy?->update(['status' => 'available', 'status_changed_at' => now()]);
+                }
+            }
+
+            Notification::notify($payable->user_id, 'operation_confirmation', [
+                'order_id' => $payable->id, 'kind' => 'purchase', 'decision' => 'rejected',
+            ]);
+        } elseif ($payable instanceof Borrowing) {
+            $payable->update(['status' => 'rejected']);
+
+            if ($payable->physical_copy_id) {
+                $payable->physicalCopy?->update(['status' => 'available', 'status_changed_at' => now()]);
+            }
+
+            Notification::notify($payable->user_id, 'operation_confirmation', [
+                'borrowing_id' => $payable->id, 'kind' => 'borrowing', 'decision' => 'rejected',
+            ]);
+        } elseif ($payable instanceof Reservation) {
+            $payable->update(['status' => 'rejected']);
+
+            Notification::notify($payable->user_id, 'operation_confirmation', [
+                'reservation_id' => $payable->id, 'kind' => 'reservation', 'decision' => 'rejected',
+            ]);
+        }
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api\Employee;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Borrowing\RequestBorrowingRequest;
+use App\Http\Requests\Reservation\StoreReservationRequest;
+use App\Http\Requests\WalkIn\CreateWalkInPurchaseRequest;
+use App\Models\Book;
+use App\Models\Borrow_option;
+use App\Models\Borrowing;
+use App\Models\Order;
+use App\Models\Order_items;
+use App\Models\PhysicalCopy;
+use App\Models\Reservation;
+use App\Models\Seat;
+use App\Models\System_setting;
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class WalkInController extends Controller
+{
+    /**
+     * FR-27: حساب Walk-in Customer نظامي ثابت — لا تسجيل دخول ولا كلمة مرور فعلية للاستخدام.
+     */
+    private function walkInCustomer(): User
+    {
+        return User::where('username', 'walk_in_customer')
+            ->where('is_system_account', true)
+            ->firstOrFail();
+    }
+
+    /**
+     * FR-27/FR-28: تسجيل بيع كتاب ورقي مباشر لزائر الشباك. الموظف يتحقق من الدفع لحظيًا وهو
+     * نفسه من يسجّل العملية، فتُنشأ مكتملة فورًا (بدون دورة Pending↔Employee Verification المنفصلة
+     * المستخدمة بالشراء عبر التطبيق).
+     */
+    public function createPurchase(CreateWalkInPurchaseRequest $request)
+    {
+        $employee = $request->user();
+        $walkIn = $this->walkInCustomer();
+        $book = Book::query()->published()->findOrFail($request->validated('book_id'));
+
+        if (! in_array($book->book_type, ['physical', 'both'], true)) {
+            abort(422, 'هذا الكتاب غير متاح للبيع الورقي');
+        }
+
+        $quantity = $request->integer('quantity', 1);
+        $authorRevenuePercent = (float) System_setting::getValue('author_revenue_percent', 0);
+
+        $order = DB::transaction(function () use ($walkIn, $employee, $book, $quantity, $authorRevenuePercent) {
+            $order = Order::create([
+                'user_id' => $walkIn->id,
+                'is_walk_in' => true,
+                'created_by' => $employee->id,
+                'status' => 'confirmed',
+            ]);
+
+            for ($i = 0; $i < $quantity; $i++) {
+                $copy = PhysicalCopy::query()
+                    ->forSale()->available()
+                    ->where('book_id', $book->id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (! $copy) {
+                    abort(422, "لا توجد نسخة ورقية متاحة للبيع للكتاب: {$book->title}");
+                }
+
+                $copy->update(['status' => 'sold', 'status_changed_at' => now()]);
+
+                $authorSharePercent = $book->author_id !== null ? $authorRevenuePercent : null;
+                $authorShareAmount = $authorSharePercent !== null
+                    ? round((float) $book->price_physical * $authorSharePercent / 100, 2)
+                    : null;
+
+                Order_items::create([
+                    'order_id' => $order->id,
+                    'book_id' => $book->id,
+                    'type' => 'physical',
+                    'physical_copy_id' => $copy->id,
+                    'price_at_purchase' => $book->price_physical,
+                    'author_share_percent_at_purchase' => $authorSharePercent,
+                    'author_share_amount_at_purchase' => $authorShareAmount,
+                    'status' => 'completed',
+                    'completed_at' => now(),
+                ]);
+            }
+
+            $order->recalculateTotal();
+
+            $order->payments()->create([
+                'user_id' => $walkIn->id,
+                'amount' => $order->total_amount,
+                'status' => 'verified',
+            ]);
+
+            return $order;
+        });
+
+        return response()->json([
+            'message' => 'تم تسجيل عملية البيع بنجاح',
+            'data' => $order->load('items.book', 'payments'),
+        ], 201);
+    }
+
+    /**
+     * FR-27/FR-28: تسجيل إعارة ورقية مباشرة لزائر الشباك — تُفعَّل فورًا لنفس سبب الشراء أعلاه.
+     */
+    public function createBorrowing(RequestBorrowingRequest $request)
+    {
+        $employee = $request->user();
+        $walkIn = $this->walkInCustomer();
+        $book = Book::query()->published()->findOrFail($request->validated('book_id'));
+        $option = Borrow_option::where('book_id', $book->id)->findOrFail($request->validated('borrow_option_id'));
+
+        if ($option->physical_price === null) {
+            abort(422, 'هذا الخيار غير متاح للإعارة الورقية');
+        }
+
+        $borrowing = DB::transaction(function () use ($walkIn, $employee, $book, $option) {
+            $copy = PhysicalCopy::query()
+                ->forBorrowing()->available()
+                ->where('book_id', $book->id)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $copy) {
+                abort(422, 'لا توجد نسخة ورقية متاحة للإعارة حاليًا لهذا الكتاب');
+            }
+
+            $copy->update(['status' => 'borrowed', 'status_changed_at' => now()]);
+
+            $borrowing = Borrowing::create([
+                'user_id' => $walkIn->id,
+                'created_by' => $employee->id,
+                'is_walk_in' => true,
+                'book_id' => $book->id,
+                'book_type' => 'physical',
+                'physical_copy_id' => $copy->id,
+                'borrow_option_id' => $option->id,
+                'duration_days' => $option->duration_days,
+                'price' => $option->physical_price,
+                'status' => 'active',
+                'start_date' => now()->toDateString(),
+                'end_date' => now()->addDays($option->duration_days)->toDateString(),
+            ]);
+
+            $borrowing->payments()->create([
+                'user_id' => $walkIn->id,
+                'amount' => $option->physical_price,
+                'status' => 'verified',
+            ]);
+
+            return $borrowing;
+        });
+
+        return response()->json([
+            'message' => 'تم تسجيل الإعارة بنجاح',
+            'data' => $borrowing->load('payments'),
+        ], 201);
+    }
+
+    /**
+     * FR-27/FR-28/BR-14/BR-15: تسجيل حجز مقعد مباشر لزائر — يُؤكَّد فورًا لنفس السبب أعلاه.
+     */
+    public function createReservation(StoreReservationRequest $request)
+    {
+        $employee = $request->user();
+        $walkIn = $this->walkInCustomer();
+        $date = $request->validated('reservation_date');
+        $period = $request->validated('period');
+        $seatsCount = $request->validated('seats_count');
+
+        $reservation = DB::transaction(function () use ($walkIn, $employee, $date, $period, $seatsCount) {
+            $totalSeats = Seat::count();
+            $reservedSeats = (int) Reservation::forSlot($date, $period)->occupying()->lockForUpdate()->sum('seats_count');
+            $available = $totalSeats - $reservedSeats;
+
+            if ($seatsCount > $available) {
+                abort(422, "العدد المطلوب غير متاح، المقاعد المتاحة حاليًا: {$available}");
+            }
+
+            $pricePerSeat = (float) System_setting::getValue('seat_reservation_price_per_seat', 0);
+            $price = round($pricePerSeat * $seatsCount, 2);
+
+            $reservation = Reservation::create([
+                'user_id' => $walkIn->id,
+                'created_by' => $employee->id,
+                'is_walk_in' => true,
+                'reservation_date' => $date,
+                'period' => $period,
+                'seats_count' => $seatsCount,
+                'price' => $price,
+                'status' => 'confirmed',
+            ]);
+
+            $reservation->payments()->create([
+                'user_id' => $walkIn->id,
+                'amount' => $price,
+                'status' => 'verified',
+            ]);
+
+            return $reservation;
+        });
+
+        return response()->json([
+            'message' => 'تم تسجيل الحجز بنجاح',
+            'data' => $reservation->load('payments'),
+        ], 201);
+    }
+
+    /**
+     * FR-29: إحصائيات عمليات Walk-in (مبيعات/إعارات/حجوزات).
+     */
+    public function stats()
+    {
+        return response()->json([
+            'data' => [
+                'sales' => Order::where('is_walk_in', true)->where('status', 'confirmed')->count(),
+                'borrowings' => Borrowing::where('is_walk_in', true)->whereIn('status', ['active', 'returned', 'expired'])->count(),
+                'reservations' => Reservation::where('is_walk_in', true)->where('status', 'confirmed')->count(),
+            ],
+        ]);
+    }
+}
+هذه في 
+class AuthorBookController extends Controller
+    /**
+     * FR-41/FR-42: إنشاء مسودة كتاب جديد (Draft) بكل بياناته (النسخ، الأسعار، الأقسام، خيارات الإعارة).
+     * الملف الرقمي يُخزَّن على disk محلي (local) غير عام — القراءة تتم فقط عبر endpoint محمي (BR-11/FR-35)،
+     * لا يوجد رابط تنزيل مباشر.
+     */
+    public function store(StoreAuthorBookRequest $request)
+    {
+        $user = $request->user();
+        $data = $request->validated();
+
+        $coverPath = $request->file('cover_image')->store('books/covers', 'public');
+        $digitalPath = $request->hasFile('digital_file')
+            ? $request->file('digital_file')->store('books/digital', 'local')
+            : null;
+
+        $book = DB::transaction(function () use ($user, $data, $coverPath, $digitalPath) {
+            $book = Book::create([
+                'author_id' => $user->id,
+                'title' => $data['title'],
+                'description' => $data['description'],
+                'cover_image' => $coverPath,
+                'publisher' => $data['publisher'],
+                'publisher_year' => $data['publisher_year'] ?? null,
+                'language' => $data['language'],
+                'book_type' => $data['book_type'],
+                'page_count' => $data['page_count'] ?? null,
+                'publish_status' => 'draft',
+                'is_hidden' => false,
+                'price_physical' => $data['price_physical'] ?? null,
+                'price_digital' => $data['price_digital'] ?? null,
+                'digital_file' => $digitalPath,
+                'submitted_by' => $user->id,
+            ]);
+
+            $book->categories()->sync($data['category_ids']);
+            $this->provisioning->syncPhysicalCopies($book, $data['sale_copies_count'] ?? 0, $data['borrow_copies_count'] ?? 0);
+            $this->provisioning->syncBorrowOptions($book, $data['borrow_options'] ?? null);
+
+            return $book;
+        });
+
+        return response()->json([
+            'message' => 'تم إنشاء مسودة الكتاب بنجاح',
+            'data' => $book->load(['categories', 'borrow_option', 'physicalCopies']),
+        ], 201);
+    }
+
+
+    /**
+     * FR-41: تعديل بيانات مسودة الكتاب قبل التقديم — متاح فقط طالما الكتاب بحالة Draft.
+     */
+    public function updateDraft(UpdateAuthorBookRequest $request, Book $book)
+    {
+        if ($book->author_id !== $request->user()->id) {
+            abort(403, 'هذا الكتاب لا يخصك');
+        }
+
+        if ($book->publish_status !== 'draft') {
+            abort(422, 'لا يمكن تعديل كتاب بعد إرساله للمراجعة');
+        }
+
+        $data = $request->validated();
+
+        $fields = collect($data)->only([
+            'title', 'description', 'publisher', 'publisher_year', 'language',
+            'page_count', 'book_type', 'price_physical', 'price_digital',
+        ])->toArray();
+
+        if ($request->hasFile('cover_image')) {
+            $fields['cover_image'] = $request->file('cover_image')->store('books/covers', 'public');
+        }
+
+        if ($request->hasFile('digital_file')) {
+            $fields['digital_file'] = $request->file('digital_file')->store('books/digital', 'local');
+        }
+
+        DB::transaction(function () use ($book, $fields, $data) {
+            if (! empty($fields)) {
+                $book->update($fields);
+            }
+
+            if (array_key_exists('category_ids', $data)) {
+                $book->categories()->sync($data['category_ids']);
+            }
+
+            if (array_key_exists('sale_copies_count', $data) || array_key_exists('borrow_copies_count', $data)) {
+                $this->provisioning->syncPhysicalCopies(
+                    $book,
+                    $data['sale_copies_count'] ?? $book->physicalCopies()->forSale()->count(),
+                    $data['borrow_copies_count'] ?? $book->physicalCopies()->forBorrowing()->count(),
+                );
+            }
+
+            if (array_key_exists('borrow_options', $data)) {
+                $this->provisioning->syncBorrowOptions($book, $data['borrow_options']);
+            }
+        });
+
+        return response()->json([
+            'message' => 'تم تحديث مسودة الكتاب بنجاح',
+            'data' => $book->fresh()->load(['categories', 'borrow_option', 'physicalCopies']),
+        ]);
+    }
+
+     * FR-43: طلب إجراء تعديل على كتاب منشور مسبقًا (لا يعدَّل الكتاب المنشور مباشرة).
+     */
+    public function requestModification(RequestBookModificationRequest $request, Book $book)
+    {
+        if ($book->author_id !== $request->user()->id) {
+            abort(403, 'هذا الكتاب لا يخصك');
+        }
+
+        if ($book->publish_status !== 'published') {
+            abort(422, 'طلب التعديل متاح فقط للكتب المنشورة');
+        }
+
+        $hasActive = Author_request::query()
+            ->bookModification()
+            ->where('book_id', $book->id)
+            ->whereIn('status', ['pending', 'changes_requested'])
+            ->exists();
+
+        if ($hasActive) {
+            abort(422, 'يوجد طلب تعديل قيد المعالجة لهذا الكتاب بالفعل');
+        }
+
+        $modificationRequest = Author_request::create([
+            'user_id' => $request->user()->id,
+            'request_type' => 'book_modification',
+            'book_id' => $book->id,
+            'changes' => $request->validated('changes'),
+            'status' => 'pending',
+        ]);
+
+        return response()->json(['message' => 'تم إرسال طلب التعديل بنجاح', 'data' => $modificationRequest], 201);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Book;
+use App\Models\Borrowing;
+use App\Models\Order_items;
+use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
+
+class AuthorEarningController extends Controller
+{
+    /**
+     * FR-48: إجمالي أرباح ونسب مبيعات المؤلف عبر كل كتبه (BR-16: النسب محفوظة كـsnapshot مع كل عملية).
+     */
+    public function index(Request $request)
+    {
+        $bookIds = $request->user()->authoredBooks()->pluck('id');
+
+        return response()->json(['data' => $this->earningsFor($bookIds)]);
+    }
+
+    /**
+     * FR-48: أرباح ومبيعات كتاب محدد للمؤلف.
+     */
+    public function forBook(Request $request, Book $book)
+    {
+        if ($book->author_id !== $request->user()->id) {
+            abort(403, 'هذا الكتاب لا يخصك');
+        }
+
+        return response()->json([
+            'data' => array_merge(
+                ['book' => $book->only(['id', 'title'])],
+                $this->earningsFor(collect([$book->id]))
+            ),
+        ]);
+    }
+
+    private function earningsFor(Collection $bookIds): array
+    {
+        $salesStats = Order_items::whereIn('book_id', $bookIds)
+            ->where('status', 'completed')
+            ->selectRaw('COUNT(*) as total_sales, COALESCE(SUM(price_at_purchase),0) as total_revenue, COALESCE(SUM(author_share_amount_at_purchase),0) as author_share')
+            ->first();
+
+        $borrowingStats = Borrowing::whereIn('book_id', $bookIds)
+            ->whereIn('status', ['active', 'returned', 'expired'])
+            ->selectRaw('COUNT(*) as total_borrowings, COALESCE(SUM(price),0) as total_revenue, COALESCE(SUM(author_share_amount),0) as author_share')
+            ->first();
+
+        return [
+            'total_sales' => (int) $salesStats->total_sales,
+            'total_borrowings' => (int) $borrowingStats->total_borrowings,
+            'total_revenue' => round((float) $salesStats->total_revenue + (float) $borrowingStats->total_revenue, 2),
+            'author_share' => round((float) $salesStats->author_share + (float) $borrowingStats->author_share, 2),
+        ];
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\AuthorRequest\ApplyAuthorRequestRequest;
+use App\Models\Author_request;
+use Illuminate\Http\Request;
+
+class AuthorRequestController extends Controller
+{
+    /**
+     * حالات الطلب التي لم تُحسم بعد (FR-40) — يمكن إلغاؤها، ولا يُسمح بطلب ترقية جديد أثناءها.
+     */
+    private const ACTIVE_STATUSES = ['pending', 'changes_requested', 'pre_approved'];
+
+    /**
+     * FR-39: عرض حالة طلبات الترقية كمؤلف المقدمة سابقًا.
+     */
+    public function myRequests(Request $request)
+    {
+        $requests = Author_request::query()
+            ->upgrade()
+            ->where('user_id', $request->user()->id)
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $requests]);
+    }
+
+    /**
+     * FR-38: تقديم طلب جديد للترقية إلى حساب مؤلف.
+     */
+    public function apply(ApplyAuthorRequestRequest $request)
+    {
+        $user = $request->user();
+
+        if ($user->isAuthor()) {
+            abort(422, 'أنت بالفعل مؤلف معتمد');
+        }
+
+        $hasActive = Author_request::query()
+            ->upgrade()
+            ->where('user_id', $user->id)
+            ->whereIn('status', self::ACTIVE_STATUSES)
+            ->exists();
+
+        if ($hasActive) {
+            abort(422, 'لديك طلب ترقية قيد المعالجة بالفعل');
+        }
+
+        $workPdfs = [];
+        foreach ($request->file('work_pdfs', []) as $file) {
+            $path = $file->store('author_requests/work_pdfs', 'local');
+            $workPdfs[] = ['path' => $path, 'size' => $file->getSize()];
+        }
+
+        $authorRequest = Author_request::create([
+            'user_id' => $user->id,
+            'request_type' => 'upgrade',
+            'bio' => $request->validated('bio'),
+            'description' => $request->validated('description'),
+            'previous_works' => $request->validated('previous_works'),
+            'work_pdfs' => $workPdfs,
+            'status' => 'pending',
+        ]);
+
+        return response()->json(['message' => 'تم إرسال طلب الترشح بنجاح', 'data' => $authorRequest], 201);
+    }
+
+    /**
+     * FR-39: عرض تفاصيل طلب انضمام محدد.
+     */
+    public function show(Request $request, Author_request $authorRequest)
+    {
+        if ($authorRequest->user_id !== $request->user()->id || ! $authorRequest->isUpgrade()) {
+            abort(403, 'هذا الطلب لا يخصك');
+        }
+
+        return response()->json(['data' => $authorRequest]);
+    }
+
+    /**
+     * FR-40: إلغاء طلب الانضمام كمؤلف طالما لم يُحسم بعد.
+     */
+    public function cancel(Request $request, Author_request $authorRequest)
+    {
+        if ($authorRequest->user_id !== $request->user()->id || ! $authorRequest->isUpgrade()) {
+            abort(403, 'هذا الطلب لا يخصك');
+        }
+
+        if (! in_array($authorRequest->status, self::ACTIVE_STATUSES, true)) {
+            abort(422, 'لا يمكن إلغاء طلب تم حسمه');
+        }
+
+        $authorRequest->delete();
+
+        return response()->json(['message' => 'تم إلغاء الطلب بنجاح']);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Book;
+use App\Models\Order_items;
+use App\Models\User;
+use App\Models\User_activity;
+use Illuminate\Http\Request;
+
+class BookController extends Controller
+{
+    /**
+     * FR-09: عرض قائمة الكتب المنشورة والظاهرة للعموم (Guest).
+     */
+    public function index(Request $request)
+    {
+        $books = Book::query()
+            ->published()
+            ->with(['categories', 'author'])
+            ->latest('published_at')
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $books]);
+    }
+
+    /**
+     * FR-11: تفاصيل كتاب محدد + الإحصائيات المحسوبة (القسم 35).
+     */
+    public function show(Book $book)
+    {
+        if ($book->publish_status !== 'published' || $book->is_hidden) {
+            return response()->json(['message' => 'الكتاب غير متاح'], 404);
+        }
+
+        $book->load([
+            'categories',
+            'author',
+            'borrow_option',
+            'physicalCopies' => fn ($q) => $q->forSale()->available(),
+        ]);
+
+        return response()->json([
+            'data' => [
+                'book' => $book,
+                'rating_avg' => $book->ratingAvgAttribute(),
+                'rating_count' => $book->ratingCountAttribute(),
+                'sales_count' => $book->salesCountAttribute(),
+                'borrow_count' => $book->borrowCountAttribute(),
+                'available_physical_copies_for_borrowing' => $book->availablePhysicalCopiesCountAttribute(),
+            ],
+        ]);
+    }
+
+    /**
+     * FR-11 / FR-25: التحقق من توفر النسخ الورقية (بيع/إعارة) لكتاب.
+     */
+    public function availability(Book $book)
+    {
+        $availableForSale = $book->physicalCopies()
+            ->forSale()->available()->count();
+
+        $availableForBorrowing = $book->availablePhysicalCopiesCountAttribute();
+
+        return response()->json([
+            'data' => [
+                'available_for_sale' => $availableForSale,
+                'available_for_borrowing' => $availableForBorrowing,
+                // BR-01: لا يوجد نسخة متاحة للإعارة = Currently Unavailable، ولا يوجد Waitlist
+                'currently_unavailable_for_borrowing' => $availableForBorrowing === 0,
+            ],
+        ]);
+    }
+
+    /**
+     * البروفايل العام للمؤلف وكتبه المنشورة فقط (BR-10: التعطيل لا يخفي الكتب تلقائيًا).
+     */
+    public function authorProfile(User $user)
+    {
+        if (! $user->isAuthor()) {
+            return response()->json(['message' => 'هذا المستخدم ليس مؤلفًا'], 404);
+        }
+
+        $books = $user->authoredBooks()
+            ->published()
+            ->with('categories')
+            ->paginate(20);
+
+        return response()->json([
+            'data' => [
+                'author' => $user->only(['id', 'full_name', 'username', 'avatar']),
+                'books' => $books,
+            ],
+        ]);
+    }
+
+    /**
+     * FR-35 / BR-11: فتح واجهة قراءة كتاب رقمي تم شراؤه (وصول دائم حتى لو أُخفي الكتاب لاحقًا).
+     */
+    public function readDigital(Request $request, Book $book)
+    {
+        $hasAccess = Order_items::whereHas('order', function ($q) use ($request) {
+                $q->where('user_id', $request->user()->id);
+            })
+            ->where('book_id', $book->id)
+            ->where('type', 'digital')
+            ->whereIn('status', ['confirmed', 'completed'])
+            ->exists();
+
+        if (! $hasAccess) {
+            return response()->json(['message' => 'ليس لديك صلاحية قراءة هذا الكتاب'], 403);
+        }
+
+        if (! $book->digital_file) {
+            return response()->json(['message' => 'الملف الرقمي غير متوفر'], 404);
+        }
+
+        // ADDED by project owner (not original teammate code) — إضافة لاحقة لسد فجوة بـFR-53:
+        // تسجيل نشاط "read" عند فتح كتاب رقمي مُشترى، بما يتوافق مع نفس التسجيل المضاف بـ
+        // BorrowingController::readDigital() لغرض تغذية خوارزمية التوصيات (FR-54).
+        User_activity::log($request->user()->id, $book->id, 'read');
+
+        // FR-35: القراءة داخل النظام فقط ولا يسمح بتنزيل الملف.
+        // TODO: استبدل هذا الحقل برابط Streaming محمي (Signed URL قصير الصلاحية) بدل تمرير المسار مباشرة.
+        return response()->json([
+            'data' => [
+                'book_id' => $book->id,
+                'title' => $book->title,
+                'digital_file' => $book->digital_file,
+            ],
+        ]);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\BookFeedback\RateRequest;
+use App\Http\Requests\BookFeedback\ReviewRequest;
+use App\Models\Book;
+use App\Models\Book_feedback;
+use App\Models\Borrowing;
+use App\Models\Order_items;
+use App\Models\User;
+use Illuminate\Http\Request;
+
+class BookFeedbackController extends Controller
+{
+    /**
+     * مشاهدة تقييمات ومراجعات كتاب (Guest).
+     */
+    public function index(Request $request, Book $book)
+    {
+        $feedback = Book_feedback::where('book_id', $book->id)
+            ->with('user:id,full_name,username,avatar')
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $feedback]);
+    }
+
+    /**
+     * FR-50/BR-13: تقييم الكتاب بالنجوم — فقط لمن اشترى الكتاب أو استعاره.
+     */
+    public function rate(RateRequest $request, Book $book)
+    {
+        $user = $request->user();
+
+        if (Book_feedback::where('user_id', $user->id)->where('book_id', $book->id)->exists()) {
+            abort(422, 'لقد قيّمت هذا الكتاب مسبقًا، استخدم تعديل التقييم');
+        }
+
+        if (! $this->canRate($user, $book)) {
+            abort(403, 'يمكنك تقييم الكتاب فقط إذا اشتريته أو استعرته');
+        }
+
+        $feedback = Book_feedback::create([
+            'user_id' => $user->id,
+            'book_id' => $book->id,
+            'rating' => $request->validated('rating'),
+        ]);
+
+        return response()->json(['message' => 'تم إضافة التقييم بنجاح', 'data' => $feedback], 201);
+    }
+
+    /**
+     * FR-50: تعديل تقييم النجوم الممنوح سابقًا.
+     */
+    public function updateRating(RateRequest $request, Book $book)
+    {
+        $feedback = Book_feedback::where('user_id', $request->user()->id)->where('book_id', $book->id)->first();
+
+        if (! $feedback) {
+            abort(404, 'لم تقيّم هذا الكتاب بعد');
+        }
+
+        $feedback->update(['rating' => $request->validated('rating')]);
+
+        return response()->json(['message' => 'تم تعديل التقييم بنجاح', 'data' => $feedback]);
+    }
+
+    /**
+     * FR-51: إضافة مراجعة نصية — تتطلب وجود تقييم بالنجوم مسبقًا (سطر واحد لكل مستخدم/كتاب).
+     */
+    public function review(ReviewRequest $request, Book $book)
+    {
+        $feedback = Book_feedback::where('user_id', $request->user()->id)->where('book_id', $book->id)->first();
+
+        if (! $feedback) {
+            abort(422, 'يجب تقييم الكتاب بالنجوم أولاً قبل إضافة مراجعة');
+        }
+
+        if ($feedback->hasReview()) {
+            abort(422, 'لديك مراجعة مسبقًا لهذا الكتاب، استخدم تعديل المراجعة');
+        }
+
+        $feedback->update(['comment' => $request->validated('comment')]);
+
+        return response()->json(['message' => 'تم إضافة المراجعة بنجاح', 'data' => $feedback], 201);
+    }
+
+    /**
+     * FR-51: تعديل نص المراجعة.
+     */
+    public function updateReview(ReviewRequest $request, Book $book)
+    {
+        $feedback = Book_feedback::where('user_id', $request->user()->id)->where('book_id', $book->id)->first();
+
+        if (! $feedback || ! $feedback->hasReview()) {
+            abort(404, 'لا توجد مراجعة لتعديلها');
+        }
+
+        $feedback->update(['comment' => $request->validated('comment')]);
+
+        return response()->json(['message' => 'تم تعديل المراجعة بنجاح', 'data' => $feedback]);
+    }
+
+    /**
+     * FR-51: حذف نص المراجعة فقط — يبقى التقييم بالنجوم كما هو.
+     */
+    public function deleteReview(Request $request, Book $book)
+    {
+        $feedback = Book_feedback::where('user_id', $request->user()->id)->where('book_id', $book->id)->first();
+
+        if (! $feedback || ! $feedback->hasReview()) {
+            abort(404, 'لا توجد مراجعة لحذفها');
+        }
+
+        $feedback->clearReview();
+
+        return response()->json(['message' => 'تم حذف المراجعة بنجاح', 'data' => $feedback]);
+    }
+
+    /**
+     * BR-13: التقييم مسموح فقط لمن اشترى الكتاب أو استعاره.
+     */
+    private function canRate(User $user, Book $book): bool
+    {
+        $purchased = Order_items::whereHas('order', fn ($q) => $q->where('user_id', $user->id))
+            ->where('book_id', $book->id)
+            ->whereIn('status', ['confirmed', 'completed'])
+            ->exists();
+
+        if ($purchased) {
+            return true;
+        }
+
+        return Borrowing::where('user_id', $user->id)
+            ->where('book_id', $book->id)
+            ->whereIn('status', ['active', 'returned', 'expired'])
+            ->exists();
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Borrowing\RequestBorrowingRequest;
+use App\Models\Book;
+use App\Models\Borrow_option;
+use App\Models\Borrowing;
+use App\Models\PhysicalCopy;
+use App\Models\User_activity;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+class BorrowingController extends Controller
+{
+    /**
+     * FR-21/FR-34: عرض سجل وطلبات الإعارة الخاصة بالمستخدم.
+     */
+    public function index(Request $request)
+    {
+        $borrowings = $request->user()->borrowings()
+            ->with(['book', 'borrow_option'])
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $borrowings]);
+    }
+
+    /**
+     * عرض تفاصيل عملية إعارة محددة.
+     */
+    public function show(Request $request, Borrowing $borrowing)
+    {
+        if ($borrowing->user_id !== $request->user()->id) {
+            abort(403, 'هذه الإعارة لا تخصك');
+        }
+
+        return response()->json(['data' => $borrowing->load(['book', 'borrow_option', 'payments'])]);
+    }
+
+    /**
+     * FR-21/FR-23/FR-24/BR-02: تقديم طلب إعارة لنسخة ورقية — يحجز نسخة borrowing متاحة فورًا
+     * لمنع الحجز المزدوج. تحرير النسخة عند الرفض يُنفَّذ ضمن دفعة Library Employee.
+     */
+    public function requestPhysical(RequestBorrowingRequest $request)
+    {
+        $user = $request->user();
+        $book = Book::query()->published()->findOrFail($request->validated('book_id'));
+        $option = Borrow_option::where('book_id', $book->id)->findOrFail($request->validated('borrow_option_id'));
+
+        if ($option->physical_price === null) {
+            abort(422, 'هذا الخيار غير متاح للإعارة الورقية');
+        }
+
+        $borrowing = DB::transaction(function () use ($user, $book, $option) {
+            $copy = PhysicalCopy::query()
+                ->forBorrowing()->available()
+                ->where('book_id', $book->id)
+                ->lockForUpdate()
+                ->first();
+
+            if (! $copy) {
+                abort(422, 'لا توجد نسخة ورقية متاحة للإعارة حاليًا لهذا الكتاب');
+            }
+
+            $copy->update(['status' => 'borrowed', 'status_changed_at' => now()]);
+
+            $borrowing = Borrowing::create([
+                'user_id' => $user->id,
+                'created_by' => $user->id,
+                'is_walk_in' => false,
+                'book_id' => $book->id,
+                'book_type' => 'physical',
+                'physical_copy_id' => $copy->id,
+                'borrow_option_id' => $option->id,
+                'duration_days' => $option->duration_days,
+                'price' => $option->physical_price,
+                'status' => 'pending',
+            ]);
+
+            $borrowing->payments()->create([
+                'user_id' => $user->id,
+                'amount' => $option->physical_price,
+                'status' => 'pending',
+            ]);
+
+            return $borrowing;
+        });
+
+        User_activity::log($user->id, $book->id, 'borrow');
+
+        return response()->json([
+            'message' => 'تم إنشاء طلب الإعارة، بانتظار الدفع',
+            'data' => $borrowing->load('payments'),
+        ], 201);
+    }
+
+    /**
+     * FR-34/BR-03: تقديم طلب إعارة لنسخة رقمية — غير محدودة النسخ، لا حاجة لقفل نسخة فيزيائية.
+     */
+    public function requestDigital(RequestBorrowingRequest $request)
+    {
+        $user = $request->user();
+        $book = Book::query()->published()->findOrFail($request->validated('book_id'));
+
+        if (! $book->digital_file) {
+            abort(422, 'لا يوجد ملف رقمي متاح لهذا الكتاب');
+        }
+
+        $option = Borrow_option::where('book_id', $book->id)->findOrFail($request->validated('borrow_option_id'));
+
+        if ($option->digital_price === null) {
+            abort(422, 'هذا الخيار غير متاح للإعارة الرقمية');
+        }
+
+        $borrowing = Borrowing::create([
+            'user_id' => $user->id,
+            'created_by' => $user->id,
+            'is_walk_in' => false,
+            'book_id' => $book->id,
+            'book_type' => 'digital',
+            'borrow_option_id' => $option->id,
+            'duration_days' => $option->duration_days,
+            'price' => $option->digital_price,
+            'status' => 'pending',
+        ]);
+
+        $borrowing->payments()->create([
+            'user_id' => $user->id,
+            'amount' => $option->digital_price,
+            'status' => 'pending',
+        ]);
+
+        User_activity::log($user->id, $book->id, 'borrow');
+
+        return response()->json([
+            'message' => 'تم إنشاء طلب الإعارة، بانتظار الدفع',
+            'data' => $borrowing->load('payments'),
+        ], 201);
+    }
+
+    /**
+     * FR-30/BR-06: تجديد الإعارة مرة واحدة فقط، قبل انتهاء المدة الحالية (بدون رسوم إضافية).
+     */
+    public function renew(Request $request, Borrowing $borrowing)
+    {
+        if ($borrowing->user_id !== $request->user()->id) {
+            abort(403, 'هذه الإعارة لا تخصك');
+        }
+
+        if (! $borrowing->canRenew()) {
+            abort(422, 'لا يمكن تجديد هذه الإعارة');
+        }
+
+        $borrowing->update([
+            'end_date' => $borrowing->end_date->copy()->addDays($borrowing->duration_days),
+            'renewed' => true,
+        ]);
+
+        return response()->json(['message' => 'تم تجديد الإعارة بنجاح', 'data' => $borrowing]);
+    }
+
+    /**
+     * FR-35/FR-36/BR-17: فتح قراءة الكتاب الرقمي المستعار خلال فترة الإعارة فقط.
+     */
+    public function readDigital(Request $request, Borrowing $borrowing)
+    {
+        if ($borrowing->user_id !== $request->user()->id) {
+            abort(403, 'هذه الإعارة لا تخصك');
+        }
+
+        $isPastEnd = $borrowing->end_date !== null && $borrowing->end_date->isPast();
+
+        if ($borrowing->status === 'active' && $isPastEnd) {
+            // FR-36: مزامنة كسولة للحالة عند اكتشاف الانتهاء وقت القراءة (لا يوجد جدولة/cron بالنطاق الحالي).
+            $borrowing->update(['status' => 'expired']);
+        }
+
+        if ($borrowing->book_type !== 'digital' || $borrowing->status !== 'active' || $isPastEnd) {
+            abort(403, 'انتهت فترة الإعارة أو لا يمكنك الوصول لهذا الكتاب');
+        }
+
+        $book = $borrowing->book;
+
+        User_activity::log($request->user()->id, $book->id, 'read');
+
+        return response()->json([
+            'data' => [
+                'book_id' => $book->id,
+                'title' => $book->title,
+                'digital_file' => $book->digital_file,
+                'end_date' => $borrowing->end_date,
+            ],
+        ]);
+    }
+
+    /**
+     * FR-23: استعلام عن خيارات ومدد الإعارة المتاحة للكتاب.
+     */
+    public function options(Book $book)
+    {
+        $options = Borrow_option::where('book_id', $book->id)->orderBy('duration_days')->get();
+
+        return response()->json(['data' => $options]);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Cart\AddCartItemRequest;
+use App\Http\Requests\Cart\UpdateCartItemRequest;
+use App\Models\Book;
+use App\Services\CartService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Str;
+
+class CartController extends Controller
+{
+    public function __construct(private readonly CartService $cartService)
+    {
+    }
+
+    /**
+     * FR-16: عرض محتويات سلة الشراء المؤقتة.
+     */
+    public function index(Request $request)
+    {
+        return response()->json(['data' => $this->cartDetails($request)]);
+    }
+
+    /**
+     * FR-16: إضافة كتاب (ورقي/رقمي) إلى السلة.
+     */
+    public function addItem(AddCartItemRequest $request)
+    {
+        $book = Book::query()->published()->findOrFail($request->validated('book_id'));
+        $type = $request->validated('type');
+
+        if (! in_array($book->book_type, [$type, 'both'], true)) {
+            abort(422, 'هذا الكتاب لا يدعم هذا النوع من الشراء');
+        }
+
+        $quantity = $type === 'digital' ? 1 : $request->integer('quantity', 1);
+
+        $cart = $this->cartService->get($request->user());
+        $itemId = (string) Str::uuid();
+        $cart[$itemId] = ['book_id' => $book->id, 'type' => $type, 'quantity' => $quantity];
+        $this->cartService->put($request->user(), $cart);
+
+        return response()->json(['message' => 'تمت الإضافة إلى السلة', 'data' => $this->cartDetails($request)], 201);
+    }
+
+    /**
+     * FR-16: تعديل الكمية أو نوع النسخة لعنصر بالسلة.
+     */
+    public function updateItem(UpdateCartItemRequest $request, string $item)
+    {
+        $cart = $this->cartService->get($request->user());
+
+        if (! isset($cart[$item])) {
+            abort(404, 'العنصر غير موجود بالسلة');
+        }
+
+        if ($request->filled('type')) {
+            $book = Book::query()->findOrFail($cart[$item]['book_id']);
+            $type = $request->validated('type');
+
+            if (! in_array($book->book_type, [$type, 'both'], true)) {
+                abort(422, 'هذا الكتاب لا يدعم هذا النوع من الشراء');
+            }
+
+            $cart[$item]['type'] = $type;
+        }
+
+        if ($cart[$item]['type'] === 'digital') {
+            $cart[$item]['quantity'] = 1;
+        } elseif ($request->filled('quantity')) {
+            $cart[$item]['quantity'] = $request->integer('quantity');
+        }
+
+        $this->cartService->put($request->user(), $cart);
+
+        return response()->json(['data' => $this->cartDetails($request)]);
+    }
+
+    /**
+     * FR-16: حذف عنصر محدد من السلة.
+     */
+    public function removeItem(Request $request, string $item)
+    {
+        $cart = $this->cartService->get($request->user());
+        unset($cart[$item]);
+        $this->cartService->put($request->user(), $cart);
+
+        return response()->json(['message' => 'تمت إزالة العنصر من السلة', 'data' => $this->cartDetails($request)]);
+    }
+
+    private function cartDetails(Request $request): array
+    {
+        $cart = $this->cartService->get($request->user());
+        $books = Book::query()
+            ->whereIn('id', collect($cart)->pluck('book_id')->unique())
+            ->get()
+            ->keyBy('id');
+
+        $items = collect($cart)->map(function (array $entry, string $itemId) use ($books) {
+            $book = $books->get($entry['book_id']);
+            $unitPrice = $book ? ($entry['type'] === 'physical' ? $book->price_physical : $book->price_digital) : null;
+
+            return [
+                'item_id' => $itemId,
+                'book' => $book,
+                'type' => $entry['type'],
+                'quantity' => $entry['quantity'],
+                'unit_price' => $unitPrice,
+                'subtotal' => $unitPrice !== null ? round((float) $unitPrice * $entry['quantity'], 2) : null,
+            ];
+        })->values();
+
+        return [
+            'items' => $items,
+            'total' => round((float) $items->sum('subtotal'), 2),
+        ];
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Category\StoreCategoryRequest;
+use App\Http\Requests\Category\UpdateCategoryRequest;
+use App\Models\Category;
+use Illuminate\Http\Request;
+
+class CategoryController extends Controller
+{
+    /**
+     * FR-55: عرض قائمة جميع التصنيفات والأقسام الفعّالة (Guest).
+     */
+    public function index()
+    {
+        $categories = Category::query()->active()->orderBy('sort_order')->get();
+
+        return response()->json(['data' => $categories]);
+    }
+
+    /**
+     * FR-55: عرض جميع الكتب المنشورة التابعة لقسم محدد.
+     */
+    public function books(Request $request, Category $category)
+    {
+        $books = $category->books()
+            ->published()
+            ->with(['categories', 'author'])
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $books]);
+    }
+
+    /**
+     * FR-55: إضافة قسم/تصنيف كتب جديد (Library Employee).
+     */
+    public function store(StoreCategoryRequest $request)
+    {
+        $category = Category::create($request->validated());
+
+        return response()->json(['message' => 'تم إضافة القسم بنجاح', 'data' => $category], 201);
+    }
+
+    /**
+     * FR-55: تعديل اسم أو بيانات قسم موجود (Library Employee).
+     */
+    public function update(UpdateCategoryRequest $request, Category $category)
+    {
+        $category->update($request->validated());
+
+        return response()->json(['message' => 'تم تحديث القسم بنجاح', 'data' => $category]);
+    }
+
+    /**
+     * FR-55: تفعيل أو إخفاء قسم من العرض (Library Employee).
+     */
+    public function toggleActive(Category $category)
+    {
+        $category->update(['is_active' => ! $category->is_active]);
+
+        return response()->json(['message' => 'تم تحديث حالة القسم', 'data' => $category]);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Book;
+use App\Models\User_activity;
+use Illuminate\Http\Request;
+
+class FavoriteController extends Controller
+{
+    /**
+     * FR-14: عرض قائمة الكتب المضافة للمفضلة.
+     */
+    public function index(Request $request)
+    {
+        $favorites = $request->user()->favoriteBooks()
+            ->with(['categories', 'author'])
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $favorites]);
+    }
+
+    /**
+     * FR-14: إضافة كتاب محدد إلى المفضلة (لا يسمح بالتكرار).
+     */
+    public function store(Request $request, Book $book)
+    {
+        $favorite = $request->user()->favorites()->firstOrCreate(['book_id' => $book->id]);
+
+        if ($favorite->wasRecentlyCreated) {
+            // FR-53: يُسجَّل النشاط فقط عند إضافة جديدة فعلية، مش عند تكرار طلب لعنصر موجود أصلًا.
+            User_activity::log($request->user()->id, $book->id, 'favorite');
+        }
+
+        return response()->json(['message' => 'تمت إضافة الكتاب إلى المفضلة'], 201);
+    }
+
+    /**
+     * FR-14: إزالة كتاب محدد من المفضلة.
+     */
+    public function destroy(Request $request, Book $book)
+    {
+        $request->user()->favorites()->where('book_id', $book->id)->delete();
+
+        return response()->json(['message' => 'تمت إزالة الكتاب من المفضلة']);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Borrowing;
+use Illuminate\Http\Request;
+
+class FineController extends Controller
+{
+    /**
+     * FR-31/FR-32/FR-33: عرض الغرامات المستحقة على المستخدم — غرامات نهائية غير مسددة
+     * (احتُسبت عند الإرجاع)، بالإضافة إلى تقدير حي للإعارات النشطة المتأخرة حاليًا.
+     */
+    public function myFines(Request $request)
+    {
+        $userId = $request->user()->id;
+
+        $finalized = Borrowing::query()
+            ->where('user_id', $userId)
+            ->whereNotNull('fine_amount')
+            ->where('fine_amount', '>', 0)
+            ->where('fine_paid', false)
+            ->with('book')
+            ->get()
+            ->map(fn (Borrowing $b) => [
+                'borrowing_id' => $b->id,
+                'book' => $b->book,
+                'amount' => (float) $b->fine_amount,
+                'days_late' => $b->fine_days_late,
+                'is_estimated' => false,
+            ]);
+
+        $estimated = Borrowing::query()
+            ->where('user_id', $userId)
+            ->overdueCandidates()
+            ->with('book')
+            ->get()
+            ->map(fn (Borrowing $b) => [
+                'borrowing_id' => $b->id,
+                'book' => $b->book,
+                'amount' => $b->calculateFine(),
+                'days_late' => $b->daysLateAttribute(),
+                'is_estimated' => true,
+            ]);
+
+        $fines = $finalized->concat($estimated)->values();
+
+        return response()->json([
+            'data' => [
+                'fines' => $fines,
+                'total_due' => round((float) $fines->sum('amount'), 2),
+            ],
+        ]);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Notification;
+use Illuminate\Http\Request;
+
+class NotificationController extends Controller
+{
+    /**
+     * FR-73: عرض قائمة جميع الإشعارات الواردة للمستخدم (الأحدث أولًا).
+     */
+    public function index(Request $request)
+    {
+        $notifications = Notification::where('user_id', $request->user()->id)
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $notifications]);
+    }
+
+    /**
+     * FR-73: تحديد إشعار محدد كـ "تمت القراءة".
+     */
+    public function markAsRead(Request $request, Notification $notification)
+    {
+        if ($notification->user_id !== $request->user()->id) {
+            abort(403, 'هذا الإشعار لا يخصك');
+        }
+
+        $notification->markAsRead();
+
+        return response()->json(['message' => 'تم تحديد الإشعار كمقروء', 'data' => $notification]);
+    }
+
+    /**
+     * FR-73: تحديد كافة الإشعارات كـ "تمت القراءة".
+     */
+    public function markAllAsRead(Request $request)
+    {
+        Notification::where('user_id', $request->user()->id)->unread()->update(['read_at' => now()]);
+
+        return response()->json(['message' => 'تم تحديد جميع الإشعارات كمقروءة']);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Offer;
+use Illuminate\Http\Request;
+
+class OfferController extends Controller
+{
+    /**
+     * FR-56: عرض العروض النشطة حاليًا للعموم (Guest).
+     */
+    public function index()
+    {
+        $offers = Offer::active()->with('books')->get();
+
+        return response()->json(['data' => $offers]);
+    }
+
+    /**
+     * عرض كافة العروض (نشطة ومنتهية) للأدمن.
+     */
+    public function adminIndex(Request $request)
+    {
+        $offers = Offer::with('books')
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $offers]);
+    }
+
+    /**
+     * FR-56: إنشاء عرض تخفيض جديد (Admin فقط، بلا أتمتة).
+     */
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'discount_percent' => ['required', 'integer', 'min:1', 'max:100'],
+            'starts_at'        => ['nullable', 'date'],
+            'ends_at'          => ['nullable', 'date', 'after_or_equal:starts_at'],
+            'active'           => ['sometimes', 'boolean'],
+            'book_ids'         => ['required', 'array', 'min:1'],
+            'book_ids.*'       => ['exists:books,id'],
+        ]);
+
+        $offer = Offer::create([
+            'discount_percent' => $validated['discount_percent'],
+            'starts_at'        => $validated['starts_at'] ?? null,
+            'ends_at'          => $validated['ends_at'] ?? null,
+            'active'           => $validated['active'] ?? true,
+            'created_by'       => $request->user()->id,
+        ]);
+
+        $offer->books()->attach($validated['book_ids']);
+
+        return response()->json([
+            'message' => 'تم إنشاء العرض بنجاح',
+            'data' => $offer->load('books'),
+        ], 201);
+    }
+
+    /**
+     * تعديل شروط أو تاريخ أو الكتب المرتبطة بعرض موجود.
+     */
+    public function update(Request $request, Offer $offer)
+    {
+        $validated = $request->validate([
+            'discount_percent' => ['sometimes', 'integer', 'min:1', 'max:100'],
+            'starts_at'        => ['sometimes', 'nullable', 'date'],
+            'ends_at'          => ['sometimes', 'nullable', 'date', 'after_or_equal:starts_at'],
+            'active'           => ['sometimes', 'boolean'],
+            'book_ids'         => ['sometimes', 'array', 'min:1'],
+            'book_ids.*'       => ['exists:books,id'],
+        ]);
+
+        $offer->update(collect($validated)->except('book_ids')->toArray());
+
+        if (isset($validated['book_ids'])) {
+            $offer->books()->sync($validated['book_ids']);
+        }
+
+        return response()->json(['message' => 'تم تحديث العرض بنجاح', 'data' => $offer->load('books')]);
+    }
+
+    /**
+     * حذف عرض تخفيض.
+     */
+    public function destroy(Offer $offer)
+    {
+        $offer->books()->detach();
+        $offer->delete();
+
+        return response()->json(['message' => 'تم حذف العرض بنجاح']);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Book;
+use App\Models\Order;
+use App\Models\Order_items;
+use App\Models\PhysicalCopy;
+use App\Models\System_setting;
+use App\Models\User_activity;
+use App\Services\CartService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+class OrderController extends Controller
+{
+    /**
+     * FR-16: عرض قائمة طلبات الشراء الخاصة بالمستخدم.
+     */
+    public function index(Request $request)
+    {
+        $orders = $request->user()->orders()
+            ->with('items.book')
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $orders]);
+    }
+
+    /**
+     * FR-16: عرض تفاصيل طلب شراء محدد.
+     */
+    public function show(Request $request, Order $order)
+    {
+        if ($order->user_id !== $request->user()->id) {
+            abort(403, 'هذا الطلب لا يخصك');
+        }
+
+        return response()->json(['data' => $order->load('items.book', 'payments')]);
+    }
+
+    /**
+     * FR-16/FR-17/FR-18: تحويل عناصر السلة إلى طلب شراء فعلي (Checkout).
+     * BR-02: لكل عنصر ورقي، تُخصَّص نسخة sale متاحة وتُقفل فورًا (status=sold) لمنع البيع المزدوج.
+     * إذا رُفض الطلب لاحقًا من الموظف، يجب تحرير هذه النسخ (تُنفَّذ ضمن دفعة Library Employee).
+     */
+    public function checkout(Request $request, CartService $cartService)
+    {
+        $user = $request->user();
+        $cart = $cartService->get($user);
+
+        if (empty($cart)) {
+            abort(422, 'السلة فارغة');
+        }
+
+        $authorRevenuePercent = (float) System_setting::getValue('author_revenue_percent', 0);
+
+        $order = DB::transaction(function () use ($cart, $user, $authorRevenuePercent) {
+            $order = Order::create([
+                'user_id' => $user->id,
+                'is_walk_in' => false,
+                'status' => 'pending',
+            ]);
+
+            foreach ($cart as $entry) {
+                $book = Book::query()->published()->lockForUpdate()->findOrFail($entry['book_id']);
+                $type = $entry['type'];
+                $quantity = $type === 'digital' ? 1 : $entry['quantity'];
+
+                for ($i = 0; $i < $quantity; $i++) {
+                    $physicalCopyId = null;
+
+                    if ($type === 'physical') {
+                        $copy = PhysicalCopy::query()
+                            ->forSale()->available()
+                            ->where('book_id', $book->id)
+                            ->lockForUpdate()
+                            ->first();
+
+                        if (! $copy) {
+                            abort(422, "لا توجد نسخة ورقية متاحة للبيع للكتاب: {$book->title}");
+                        }
+
+                        $copy->update(['status' => 'sold', 'status_changed_at' => now()]);
+                        $physicalCopyId = $copy->id;
+                    }
+
+                    $price = $type === 'physical' ? $book->price_physical : $book->price_digital;
+                    $authorSharePercent = $book->author_id !== null ? $authorRevenuePercent : null;
+                    $authorShareAmount = $authorSharePercent !== null
+                        ? round((float) $price * $authorSharePercent / 100, 2)
+                        : null;
+
+                    Order_items::create([
+                        'order_id' => $order->id,
+                        'book_id' => $book->id,
+                        'type' => $type,
+                        'physical_copy_id' => $physicalCopyId,
+                        'price_at_purchase' => $price,
+                        'author_share_percent_at_purchase' => $authorSharePercent,
+                        'author_share_amount_at_purchase' => $authorShareAmount,
+                        'status' => 'pending',
+                    ]);
+                }
+            }
+
+            $order->recalculateTotal();
+
+            $order->payments()->create([
+                'user_id' => $user->id,
+                'amount' => $order->total_amount,
+                'status' => 'pending',
+            ]);
+
+            return $order;
+        });
+
+        $cartService->clear($user);
+
+        // FR-53: نشاط "شراء" لكل كتاب مختلف بالطلب (مرة وحدة حتى لو اشترى عدة نسخ من نفس الكتاب).
+        foreach (collect($cart)->pluck('book_id')->unique() as $bookId) {
+            User_activity::log($user->id, $bookId, 'purchase');
+        }
+
+        return response()->json([
+            'message' => 'تم إنشاء الطلب بنجاح، بانتظار الدفع',
+            'data' => $order->load('items.book', 'payments'),
+        ], 201);
+    }
+
+    /**
+     * FR-17: تأكيد استلام العنصر الورقي (من قبل المستخدم نفسه بعد استلامه من المكتبة) وتحويله لمكتمل.
+     */
+    public function markCompleted(Request $request, Order_items $orderItem)
+    {
+        if ($orderItem->order->user_id !== $request->user()->id) {
+            abort(403, 'هذا العنصر لا يخصك');
+        }
+
+        if ($orderItem->type !== 'physical' || $orderItem->status !== 'ready') {
+            abort(422, 'هذا العنصر غير جاهز للاستلام');
+        }
+
+        $orderItem->update(['status' => 'completed', 'completed_at' => now()]);
+
+        return response()->json(['message' => 'تم تأكيد الاستلام بنجاح', 'data' => $orderItem]);
+    }
+
+    /**
+     * BR-11: عرض جميع المشتريات الرقمية التي يملك المستخدم صلاحية وصول دائم إليها.
+     */
+    public function myPurchases(Request $request)
+    {
+        $purchases = Order_items::query()
+            ->whereHas('order', fn ($q) => $q->where('user_id', $request->user()->id))
+            ->where('type', 'digital')
+            ->whereIn('status', ['confirmed', 'completed'])
+            ->with('book')
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $purchases]);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Borrowing;
+use App\Models\Order;
+use App\Models\Reservation;
+use App\Models\System_setting;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Http\Request;
+
+class PaymentController extends Controller
+{
+    /**
+     * FR-19: عرض رمز QR الثابت (Sham Cash) + المبلغ المطلوب، لعملية Order/Borrowing/Reservation.
+     * النظام لا يتصل مباشرة بـSham Cash — فقط يعرض نفس صورة QR الثابتة والمبلغ.
+     */
+    public function showQrCode(Request $request)
+    {
+        $payable = $this->resolvePayable($request);
+        $payment = $payable->payments()->latest()->first();
+
+        if (! $payment) {
+            abort(404, 'لا توجد عملية دفع مرتبطة');
+        }
+
+        return response()->json([
+            'data' => [
+                'qr_code' => System_setting::getValue('payment_qr_code'),
+                'amount' => (float) $payment->amount,
+                'payment_status' => $payment->status,
+            ],
+        ]);
+    }
+
+    /**
+     * FR-19/FR-20/BR-08: إشعار النظام بأن المستخدم دفع خارجيًا. لا يغيّر حالة الدفع تلقائيًا —
+     * تبقى pending لحد ما يتحقق Library Employee يدويًا وبقبل/يرفض.
+     */
+    public function markUserPaidExternally(Request $request)
+    {
+        $payable = $this->resolvePayable($request);
+        $payment = $payable->payments()->pending()->latest()->first();
+
+        if (! $payment) {
+            abort(404, 'لا توجد عملية دفع بانتظار التحقق');
+        }
+
+        // TODO: عند بناء دفعة الإشعارات (Notifications)، أرسل إشعارًا لـLibrary Employee هون.
+        return response()->json(['message' => 'تم إشعار النظام بالدفع، بانتظار تحقق الموظف', 'data' => $payment]);
+    }
+
+    private function resolvePayable(Request $request): Model
+    {
+        if ($orderId = $request->route('order')) {
+            $payable = Order::findOrFail($orderId);
+        } elseif ($borrowingId = $request->route('borrowing')) {
+            $payable = Borrowing::findOrFail($borrowingId);
+        } elseif ($reservationId = $request->route('reservation')) {
+            $payable = Reservation::findOrFail($reservationId);
+        } else {
+            abort(404);
+        }
+
+        if ($payable->user_id !== $request->user()->id) {
+            abort(403, 'هذه العملية لا تخصك');
+        }
+
+        return $payable;
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Book;
+use App\Models\User_activity;
+use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
+
+class RecommendationController extends Controller
+{
+    /**
+     * نقاط التفاعل بحسب نوع النشاط (FR-54): فتح رقمي = 1، مفضلة = 2، إعارة = 3، شراء = 4.
+     */
+    private const ACTIVITY_POINTS = ['read' => 1, 'favorite' => 2, 'borrow' => 3, 'purchase' => 4];
+
+    /**
+     * FR-54: خوارزمية Hybrid Rule-Based بسيطة — بدون أي AI.
+     * 1) أعلى الأقسام تفاعلًا مع المستخدم. 2) المؤلفون الأكثر تفاعلًا معهم. 3) كتب مشابهة
+     * (نفس القسم — نفس آلية البند 1، فما في داعي لاستعلام منفصل). 4) Fallback: الكتب الأكثر شعبية
+     * إذا نشاط المستخدم غير كافٍ.
+     */
+    public function forUser(Request $request)
+    {
+        $user = $request->user();
+        $limit = min($request->integer('limit', 10), 50);
+
+        $activities = User_activity::where('user_id', $user->id)->get();
+
+        if ($activities->isEmpty()) {
+            return response()->json([
+                'data' => ['source' => 'popular', 'books' => $this->popularBooks($limit)],
+            ]);
+        }
+
+        $interactedBookIds = $activities->pluck('book_id')->unique();
+        $interactedBooks = Book::whereIn('id', $interactedBookIds)->with('categories:id')->get()->keyBy('id');
+
+        [$topCategoryIds, $topAuthorIds] = $this->topCategoriesAndAuthors($activities, $interactedBooks);
+
+        $recommended = collect();
+
+        if ($topCategoryIds->isNotEmpty()) {
+            $recommended = $recommended->merge(
+                Book::query()->published()
+                    ->whereHas('categories', fn ($q) => $q->whereIn('categories.id', $topCategoryIds))
+                    ->whereNotIn('id', $interactedBookIds)
+                    ->with('categories')
+                    ->limit($limit)
+                    ->get()
+            );
+        }
+
+        if ($recommended->count() < $limit && $topAuthorIds->isNotEmpty()) {
+            $excluded = $interactedBookIds->merge($recommended->pluck('id'));
+
+            $recommended = $recommended->merge(
+                Book::query()->published()
+                    ->whereIn('author_id', $topAuthorIds)
+                    ->whereNotIn('id', $excluded)
+                    ->with('categories')
+                    ->limit($limit - $recommended->count())
+                    ->get()
+            );
+        }
+
+        if ($recommended->count() < $limit) {
+            $excluded = $interactedBookIds->merge($recommended->pluck('id'));
+            $recommended = $recommended->merge($this->popularBooks($limit - $recommended->count(), $excluded));
+        }
+
+        $recommended = $recommended->unique('id')->take($limit)->values();
+
+        return response()->json([
+            'data' => ['source' => 'personalized', 'books' => $recommended],
+        ]);
+    }
+
+    /**
+     * @return array{0: Collection, 1: Collection} [أعلى الأقسام, أعلى المؤلفين] مرتبة تنازليًا حسب نقاط التفاعل.
+     */
+    private function topCategoriesAndAuthors(Collection $activities, Collection $interactedBooks): array
+    {
+        $categoryScores = [];
+        $authorScores = [];
+
+        foreach ($activities as $activity) {
+            $points = self::ACTIVITY_POINTS[$activity->activity_type] ?? 1;
+            $book = $interactedBooks->get($activity->book_id);
+
+            if (! $book) {
+                continue;
+            }
+
+            foreach ($book->categories as $category) {
+                $categoryScores[$category->id] = ($categoryScores[$category->id] ?? 0) + $points;
+            }
+
+            if ($book->author_id !== null) {
+                $authorScores[$book->author_id] = ($authorScores[$book->author_id] ?? 0) + $points;
+            }
+        }
+
+        arsort($categoryScores);
+        arsort($authorScores);
+
+        return [
+            collect(array_keys($categoryScores))->take(3),
+            collect(array_keys($authorScores))->take(3),
+        ];
+    }
+
+    /**
+     * FR-54: Fallback — الكتب الأكثر شعبية (مبيعات + إعارات + تقييمات).
+     */
+    private function popularBooks(int $limit, ?Collection $excludeIds = null): Collection
+    {
+        return Book::query()->published()
+            ->when($excludeIds, fn ($q) => $q->whereNotIn('id', $excludeIds))
+            ->withCount(['Order_items as sales_count' => fn ($q) => $q->where('status', 'completed')])
+            ->withCount(['borrowings as borrow_count' => fn ($q) => $q->whereIn('status', ['active', 'returned', 'expired'])])
+            ->withAvg('book_feedback', 'rating')
+            ->with('categories')
+            ->orderByDesc('sales_count')
+            ->orderByDesc('borrow_count')
+            ->orderByDesc('book_feedback_avg_rating')
+            ->limit($limit)
+            ->get();
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Reservation\StoreReservationRequest;
+use App\Models\Reservation;
+use App\Models\Seat;
+use App\Models\System_setting;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+
+class ReservationController extends Controller
+{
+    /**
+     * FR-58: عرض حجوزات المقاعد الخاصة بالمستخدم.
+     */
+    public function myReservations(Request $request)
+    {
+        $reservations = $request->user()->reservations()
+            ->latest()
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $reservations]);
+    }
+
+    /**
+     * FR-58/FR-59/FR-60/BR-14/BR-15: حجز عدد مقاعد ضمن إحدى الفترتين الثابتتين ليوم محدد.
+     * السعر = عدد المقاعد × سعر المقعد الواحد (إعداد نظام payment_qr_code-مشابه: seat_reservation_price_per_seat،
+     * لا يوجد مصدر آخر موثّق لسعر الحجز بالمتطلبات).
+     */
+    public function store(StoreReservationRequest $request)
+    {
+        $user = $request->user();
+        $date = $request->validated('reservation_date');
+        $period = $request->validated('period');
+        $seatsCount = $request->validated('seats_count');
+
+        $reservation = DB::transaction(function () use ($user, $date, $period, $seatsCount) {
+            $totalSeats = Seat::count();
+
+            // ملاحظة: القفل هون بيقفل الصفوف الموجودة فعليًا بنفس الـslot، وهاد كافٍ لمعظم
+            // حالات التزامن العملية بمشروع بهاد الحجم؛ ما في حماية كاملة من phantom rows
+            // لسلوت فاضي تمامًا (لا يوجد صف يُقفل عليه أصلًا).
+            $reservedSeats = (int) Reservation::forSlot($date, $period)->occupying()->lockForUpdate()->sum('seats_count');
+            $available = $totalSeats - $reservedSeats;
+
+            if ($seatsCount > $available) {
+                abort(422, "العدد المطلوب غير متاح، المقاعد المتاحة حاليًا: {$available}");
+            }
+
+            $pricePerSeat = (float) System_setting::getValue('seat_reservation_price_per_seat', 0);
+            $price = round($pricePerSeat * $seatsCount, 2);
+
+            $reservation = Reservation::create([
+                'user_id' => $user->id,
+                'created_by' => $user->id,
+                'is_walk_in' => false,
+                'reservation_date' => $date,
+                'period' => $period,
+                'seats_count' => $seatsCount,
+                'price' => $price,
+                'status' => 'pending',
+            ]);
+
+            $reservation->payments()->create([
+                'user_id' => $user->id,
+                'amount' => $price,
+                'status' => 'pending',
+            ]);
+
+            return $reservation;
+        });
+
+        return response()->json([
+            'message' => 'تم إنشاء طلب الحجز، بانتظار الدفع',
+            'data' => $reservation->load('payments'),
+        ], 201);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Search\FilterBooksRequest;
+use App\Http\Requests\Search\SearchRequest;
+use App\Models\Book;
+use App\Models\Category;
+use App\Models\User;
+
+class SearchController extends Controller
+{
+    /**
+     * FR-12: البحث في الكتب والمؤلفين والأقسام باسم الكتاب/المؤلف/غيرها من بيانات الفهرسة.
+     */
+    public function search(SearchRequest $request)
+    {
+        $q = $request->string('q')->toString();
+
+        $books = Book::query()
+            ->published()
+            ->where(function ($query) use ($q) {
+                $query->where('title', 'like', "%{$q}%")
+                    ->orWhere('author_name', 'like', "%{$q}%");
+            })
+            ->with(['categories', 'author'])
+            ->paginate($request->integer('per_page', 20));
+
+        $authors = User::query()
+            ->whereHas('roles', fn ($r) => $r->where('name', 'author'))
+            ->where(function ($query) use ($q) {
+                $query->where('full_name', 'like', "%{$q}%")
+                    ->orWhere('username', 'like', "%{$q}%");
+            })
+            ->get(['id', 'full_name', 'username', 'avatar']);
+
+        $categories = Category::query()
+            ->active()
+            ->where('name', 'like', "%{$q}%")
+            ->get();
+
+        return response()->json([
+            'data' => [
+                'books' => $books,
+                'authors' => $authors,
+                'categories' => $categories,
+            ],
+        ]);
+    }
+
+    /**
+     * FR-13: تصفية الكتب حسب اللغة والنوع والتقييم (rating_avg محسوب ديناميكيًا عبر withAvg).
+     */
+    public function filterBooks(FilterBooksRequest $request)
+    {
+        $books = Book::query()
+            ->published()
+            ->when($request->filled('language'), fn ($q) => $q->where('language', $request->string('language')))
+            ->when($request->filled('book_type'), fn ($q) => $q->where('book_type', $request->string('book_type')))
+            ->withAvg('book_feedback', 'rating')
+            ->when(
+                $request->filled('min_rating'),
+                fn ($q) => $q->having('book_feedback_avg_rating', '>=', (float) $request->input('min_rating'))
+            )
+            ->with(['categories', 'author'])
+            ->paginate($request->integer('per_page', 20));
+
+        return response()->json(['data' => $books]);
+    }
+}
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Seat\StoreSeatRequest;
+use App\Models\Reservation;
+use App\Models\Seat;
+use Illuminate\Http\Request;
+
+class SeatController extends Controller
+{
+    /**
+     * FR-60: عرض إجمالي/محجوز/متاح المقاعد لتاريخ وفترة محددين (اليوم والفترة الحالية افتراضيًا).
+     */
+    public function availability(Request $request)
+    {
+        $date = $request->input('date', now()->toDateString());
+        $period = $request->input('period', $this->currentPeriod());
+
+        $total = Seat::count();
+        $reserved = (int) Reservation::forSlot($date, $period)->occupying()->sum('seats_count');
+
+        return response()->json([
+            'data' => [
+                'date' => $date,
+                'period' => $period,
+                'total' => $total,
+                'reserved' => $reserved,
+                'available' => max(0, $total - $reserved),
+            ],
+        ]);
+    }
+
+    /**
+     * FR-57: عرض قائمة المقاعد المعرفة بالنظام (Library Employee).
+     */
+    public function index(Request $request)
+    {
+        $seats = Seat::query()->latest()->paginate($request->integer('per_page', 50));
+
+        return response()->json(['data' => $seats]);
+    }
+
+    /**
+     * FR-57: إضافة مقعد جديد للنظام (Library Employee).
+     */
+    public function store(StoreSeatRequest $request)
+    {
+        $seat = Seat::create($request->validated());
+
+        return response()->json(['message' => 'تمت إضافة المقعد بنجاح', 'data' => $seat], 201);
+    }
+
+    /**
+     * FR-57: حذف مقعد من النظام (Library Employee).
+     */
+    public function destroy(Seat $seat)
+    {
+        $seat->delete();
+
+        return response()->json(['message' => 'تم حذف المقعد بنجاح']);
+    }
+
+    /**
+     * FR-59: الفترتان الثابتتان يوميًا: period_1 = 00:00-12:00، period_2 = 12:00-00:00.
+     */
+    private function currentPeriod(): string
+    {
+        return now()->hour < 12 ? 'period_1' : 'period_2';
+    }
+}
+

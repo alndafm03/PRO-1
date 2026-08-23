@@ -1,0 +1,556 @@
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Role;
+use App\Models\User;
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+
+class UserSeeder extends Seeder
+{
+    /**
+     * FR-27 — the system-owned Walk-in Customer account, plus a trial Admin account.
+     */
+    public function run(): void
+    {
+        $walkIn = User::firstOrCreate(
+            ['username' => 'walk_in_customer'],
+            [
+                'full_name' => 'Walk-in Customer',
+                'phone' => '0000000000',
+                'email' => 'walk-in@system.local',
+                'password' => Hash::make(Str::random(40)),
+                'status' => 'active',
+                'birthday' => '2000-01-01',
+                'is_system_account' => true,
+            ]
+        );
+        $walkIn->roles()->syncWithoutDetaching(Role::firstOrCreate(['name' => 'reader'])->id);
+
+        $admin = User::firstOrCreate(
+            ['username' => 'admin'],
+            [
+                'full_name' => 'System Admin',
+                'phone' => '0100000000',
+                'email' => 'admin@library.local',
+                'password' => Hash::make('Admin@12345'),
+                'status' => 'active',
+                'birthday' => '1990-01-01',
+                'is_system_account' => false,
+            ]
+        );
+        $admin->roles()->syncWithoutDetaching(Role::firstOrCreate(['name' => 'admin'])->id);
+    }
+}
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\System_setting;
+use Illuminate\Database\Seeder;
+
+class SystemSettingSeeder extends Seeder
+{
+    public function run(): void
+    {
+        $settings = [
+            'library_name' => 'مكتبة المعرفة',
+            'library_address' => 'دمشق، سوريا',
+            'library_phone' => '011-2233445',
+            'working_hours' => 'يوميًا من 9 صباحًا حتى 9 مساءً',
+            'author_revenue_percent' => '30',
+            'seat_reservation_price_per_seat' => '2',
+            // FR-19: صورة QR ثابتة لحساب المكتبة على Sham Cash (placeholder — يُستبدل بصورة حقيقية من لوحة الأدمن).
+            'payment_qr_code' => 'settings/sham_cash_qr_placeholder.png',
+        ];
+
+        foreach ($settings as $key => $value) {
+            System_setting::firstOrCreate(['key' => $key], ['value' => $value]);
+        }
+    }
+}
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Seat;
+use Illuminate\Database\Seeder;
+
+class SeatSeeder extends Seeder
+{
+    public function run(): void
+    {
+        for ($i = 1; $i <= 20; $i++) {
+            Seat::firstOrCreate(['code' => sprintf('A-%02d', $i)]);
+        }
+    }
+}
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Role;
+use Illuminate\Database\Seeder;
+
+class RoleSeeder extends Seeder
+{
+    /**
+     * FR-04 — the five roles the system supports.
+     */
+    public function run(): void
+    {
+        foreach (['reader', 'author', 'library_employee', 'author_content_employee', 'admin'] as $role) {
+            Role::firstOrCreate(['name' => $role]);
+        }
+    }
+}
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Role;
+use App\Models\User;
+use Illuminate\Database\Seeder;
+use Illuminate\Support\Facades\Hash;
+
+class DemoUserSeeder extends Seeder
+{
+    /**
+     * كلمة مرور موحّدة لكل حسابات الديمو لتسهيل التجربة على فريق الفرونت إند.
+     */
+    private const DEMO_PASSWORD = 'Password@123';
+
+    public function run(): void
+    {
+        $readerRole = Role::firstOrCreate(['name' => 'reader']);
+        $authorRole = Role::firstOrCreate(['name' => 'author']);
+        $libraryEmployeeRole = Role::firstOrCreate(['name' => 'library_employee']);
+        $contentEmployeeRole = Role::firstOrCreate(['name' => 'author_content_employee']);
+
+        // FR-06: Author = Reader + Author Permissions — كل مؤلف يحمل الدورين معًا.
+        $this->makeUser('reader1', 'قارئ تجريبي 1', 'reader1@library.local', [$readerRole]);
+        $this->makeUser('reader2', 'قارئ تجريبي 2', 'reader2@library.local', [$readerRole]);
+        $this->makeUser('reader3', 'قارئ تجريبي 3', 'reader3@library.local', [$readerRole]);
+
+        $this->makeUser('author1', 'مؤلف تجريبي 1', 'author1@library.local', [$readerRole, $authorRole]);
+        $this->makeUser('author2', 'مؤلف تجريبي 2', 'author2@library.local', [$readerRole, $authorRole]);
+
+        $this->makeUser('library_emp1', 'موظف مكتبة تجريبي', 'libemp1@library.local', [$libraryEmployeeRole]);
+        $this->makeUser('content_emp1', 'موظف محتوى تجريبي', 'contentemp1@library.local', [$contentEmployeeRole]);
+    }
+
+    private function makeUser(string $username, string $fullName, string $email, array $roles): User
+    {
+        $user = User::firstOrCreate(
+            ['username' => $username],
+            [
+                'full_name' => $fullName,
+                'phone' => '09' . substr((string) crc32($username), 0, 8),
+                'email' => $email,
+                'password' => Hash::make(self::DEMO_PASSWORD),
+                'status' => 'active',
+                'birthday' => '1995-01-01',
+                'is_system_account' => false,
+            ]
+        );
+
+        $user->roles()->syncWithoutDetaching(collect($roles)->pluck('id'));
+
+        return $user;
+    }
+}
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Author_request;
+use App\Models\Book;
+use App\Models\Book_feedback;
+use App\Models\Borrow_option;
+use App\Models\Borrowing;
+use App\Models\Favorite;
+use App\Models\Offer;
+use App\Models\Order;
+use App\Models\Order_items;
+use App\Models\PhysicalCopy;
+use App\Models\Reservation;
+use App\Models\System_setting;
+use App\Models\User;
+use App\Models\User_activity;
+use Illuminate\Database\Seeder;
+
+class DemoTransactionSeeder extends Seeder
+{
+    public function run(): void
+    {
+        $reader1 = User::where('username', 'reader1')->first();
+        $reader2 = User::where('username', 'reader2')->first();
+        $reader3 = User::where('username', 'reader3')->first();
+        $admin = User::where('username', 'admin')->first();
+        $contentEmployee = User::where('username', 'content_emp1')->first();
+
+        $novel = Book::where('title', 'رواية الصحراء')->first();
+        $physics = Book::where('title', 'أساسيات الفيزياء')->first();
+        $python = Book::where('title', 'تعلم بايثون من الصفر')->first();
+
+        if (! $reader1 || ! $novel || ! $physics || ! $python) {
+            return; // يعتمد على DemoUserSeeder وDemoBookSeeder — يُتجاوز لو ما اشتغلوا قبله
+        }
+
+        $authorRevenuePercent = (float) System_setting::getValue('author_revenue_percent', 0);
+
+        // === طلب شراء مكتمل (reader1 اشترى نسخة ورقية من "رواية الصحراء") ===
+        if (! Order::where('user_id', $reader1->id)->where('is_walk_in', false)->exists()) {
+            $order = Order::create(['user_id' => $reader1->id, 'is_walk_in' => false, 'status' => 'confirmed']);
+            $copy = PhysicalCopy::where('book_id', $novel->id)->forSale()->available()->first();
+
+            if ($copy) {
+                $copy->update(['status' => 'sold', 'status_changed_at' => now()]);
+                $authorShare = $novel->author_id ? round((float) $novel->price_physical * $authorRevenuePercent / 100, 2) : null;
+
+                Order_items::create([
+                    'order_id' => $order->id, 'book_id' => $novel->id, 'type' => 'physical', 'physical_copy_id' => $copy->id,
+                    'price_at_purchase' => $novel->price_physical,
+                    'author_share_percent_at_purchase' => $novel->author_id ? $authorRevenuePercent : null,
+                    'author_share_amount_at_purchase' => $authorShare,
+                    'status' => 'completed', 'ready_at' => now()->subDay(), 'completed_at' => now(),
+                ]);
+                $order->recalculateTotal();
+                $order->payments()->create(['user_id' => $reader1->id, 'amount' => $order->total_amount, 'status' => 'verified']);
+            }
+        }
+        $this->logActivityOnce($reader1->id, $novel->id, 'purchase');
+
+        // === طلب شراء بانتظار تحقق الموظف (reader2 يشتري "تعلم بايثون من الصفر" رقمي) ===
+        if (! Order::where('user_id', $reader2->id)->where('status', 'pending')->exists()) {
+            $order2 = Order::create(['user_id' => $reader2->id, 'is_walk_in' => false, 'status' => 'pending']);
+            Order_items::create([
+                'order_id' => $order2->id, 'book_id' => $python->id, 'type' => 'digital',
+                'price_at_purchase' => $python->price_digital, 'status' => 'pending',
+            ]);
+            $order2->recalculateTotal();
+            $order2->payments()->create(['user_id' => $reader2->id, 'amount' => $order2->total_amount, 'status' => 'pending']);
+        }
+
+        // === إعارة فعّالة (reader1 يستعير "أساسيات الفيزياء" ورقيًا، 14 يوم) ===
+        if (! Borrowing::where('user_id', $reader1->id)->where('status', 'active')->exists()) {
+            $option = Borrow_option::where('book_id', $physics->id)->first();
+            $copy = PhysicalCopy::where('book_id', $physics->id)->forBorrowing()->available()->first();
+
+            if ($option && $copy) {
+                $copy->update(['status' => 'borrowed', 'status_changed_at' => now()]);
+                $authorShare = $physics->author_id ? round((float) $option->physical_price * $authorRevenuePercent / 100, 2) : null;
+
+                $borrowing = Borrowing::create([
+                    'user_id' => $reader1->id, 'created_by' => $reader1->id, 'is_walk_in' => false,
+                    'book_id' => $physics->id, 'book_type' => 'physical', 'physical_copy_id' => $copy->id,
+                    'borrow_option_id' => $option->id, 'duration_days' => $option->duration_days, 'price' => $option->physical_price,
+                    'status' => 'active', 'start_date' => now()->subDays(3), 'end_date' => now()->addDays($option->duration_days - 3),
+                    'author_revenue_percent_snapshot' => $physics->author_id ? $authorRevenuePercent : null,
+                    'author_share_amount' => $authorShare,
+                ]);
+                $borrowing->payments()->create(['user_id' => $reader1->id, 'amount' => $option->physical_price, 'status' => 'verified']);
+            }
+        }
+        $this->logActivityOnce($reader1->id, $physics->id, 'borrow');
+
+        // === طلب إعارة بانتظار الموافقة (reader3 يطلب استعارة "رواية الصحراء" 7 أيام) ===
+        if (! Borrowing::where('user_id', $reader3->id)->where('status', 'pending')->exists()) {
+            $option = Borrow_option::where('book_id', $novel->id)->where('duration_days', 7)->first();
+            $copy = PhysicalCopy::where('book_id', $novel->id)->forBorrowing()->available()->first();
+
+            if ($option && $copy) {
+                $copy->update(['status' => 'borrowed', 'status_changed_at' => now()]);
+
+                $borrowing = Borrowing::create([
+                    'user_id' => $reader3->id, 'created_by' => $reader3->id, 'is_walk_in' => false,
+                    'book_id' => $novel->id, 'book_type' => 'physical', 'physical_copy_id' => $copy->id,
+                    'borrow_option_id' => $option->id, 'duration_days' => $option->duration_days, 'price' => $option->physical_price,
+                    'status' => 'pending',
+                ]);
+                $borrowing->payments()->create(['user_id' => $reader3->id, 'amount' => $option->physical_price, 'status' => 'pending']);
+            }
+        }
+
+        // === حجز مقاعد مؤكد (reader2، اليوم، الفترة 1، مقعدين) ===
+        if (! Reservation::where('user_id', $reader2->id)->where('status', 'confirmed')->exists()) {
+            $pricePerSeat = (float) System_setting::getValue('seat_reservation_price_per_seat', 0);
+            $reservation = Reservation::create([
+                'user_id' => $reader2->id, 'created_by' => $reader2->id, 'is_walk_in' => false,
+                'reservation_date' => now()->toDateString(), 'period' => 'period_1', 'seats_count' => 2,
+                'price' => round($pricePerSeat * 2, 2), 'status' => 'confirmed',
+            ]);
+            $reservation->payments()->create(['user_id' => $reader2->id, 'amount' => $reservation->price, 'status' => 'verified']);
+        }
+
+        // === حجز مقاعد بانتظار الدفع (reader3، غدًا، الفترة 2، مقعد واحد) ===
+        if (! Reservation::where('user_id', $reader3->id)->where('status', 'pending')->exists()) {
+            $pricePerSeat = (float) System_setting::getValue('seat_reservation_price_per_seat', 0);
+            $reservation2 = Reservation::create([
+                'user_id' => $reader3->id, 'created_by' => $reader3->id, 'is_walk_in' => false,
+                'reservation_date' => now()->addDay()->toDateString(), 'period' => 'period_2', 'seats_count' => 1,
+                'price' => round($pricePerSeat * 1, 2), 'status' => 'pending',
+            ]);
+            $reservation2->payments()->create(['user_id' => $reader3->id, 'amount' => $reservation2->price, 'status' => 'pending']);
+        }
+
+        // === تقييمات ومراجعات (BR-13: فقط لمن اشترى/استعار فعليًا — reader1 مؤهل للكتابين أعلاه) ===
+        Book_feedback::firstOrCreate(
+            ['user_id' => $reader1->id, 'book_id' => $novel->id],
+            ['rating' => 5, 'comment' => 'رواية رائعة، أنصح بقراءتها بشدة.']
+        );
+        Book_feedback::firstOrCreate(
+            ['user_id' => $reader1->id, 'book_id' => $physics->id],
+            ['rating' => 4, 'comment' => 'شرح واضح ومبسّط للمفاهيم الأساسية.']
+        );
+
+        // === مفضلة (FR-14) ===
+        Favorite::firstOrCreate(['user_id' => $reader2->id, 'book_id' => $python->id]);
+        $this->logActivityOnce($reader2->id, $python->id, 'favorite');
+
+        // === طلبات ترقية لمؤلف (FR-38/39) ===
+        if ($reader2 && ! Author_request::where('user_id', $reader2->id)->where('request_type', 'upgrade')->exists()) {
+            Author_request::create([
+                'user_id' => $reader2->id, 'request_type' => 'upgrade', 'status' => 'pending',
+                'bio' => 'كاتب مهتم بأدب الرحلات.', 'description' => 'أرغب بنشر تجاربي في الكتابة.',
+                'previous_works' => 'مقالات منشورة على مدونة شخصية.', 'work_pdfs' => [],
+            ]);
+        }
+
+        if ($reader3 && ! Author_request::where('user_id', $reader3->id)->where('request_type', 'upgrade')->exists()) {
+            Author_request::create([
+                'user_id' => $reader3->id, 'request_type' => 'upgrade', 'status' => 'pre_approved',
+                'bio' => 'باحث ومحاضر جامعي.', 'description' => 'أرغب بنشر مؤلفاتي الأكاديمية.',
+                'previous_works' => 'عدة أبحاث منشورة.', 'work_pdfs' => [],
+                'reviewed_by' => $contentEmployee?->id, 'reviewed_at' => now()->subDay(),
+            ]);
+        }
+
+        // === عرض تخفيض نشط (FR-56) ===
+        if ($admin && ! Offer::where('discount_percent', 20)->exists()) {
+            $offer = Offer::create([
+                'discount_percent' => 20, 'starts_at' => null, 'ends_at' => now()->addDays(30),
+                'active' => true, 'created_by' => $admin->id,
+            ]);
+            $offer->books()->syncWithoutDetaching([$python->id]);
+        }
+    }
+
+    /**
+     * FR-53: مستقل عن حراس "الشرط الموجود مسبقًا" أعلاه — بيتأكد النشاط مسجّل دايمًا حتى لو
+     * إعادة تشغيل الـseeder صادفت العمليات (Order/Borrowing) موجودة مسبقًا من تشغيل سابق.
+     */
+    private function logActivityOnce(int $userId, int $bookId, string $type): void
+    {
+        $exists = User_activity::where('user_id', $userId)
+            ->where('book_id', $bookId)
+            ->where('activity_type', $type)
+            ->exists();
+
+        if (! $exists) {
+            User_activity::log($userId, $bookId, $type);
+        }
+    }
+}
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Book;
+use App\Models\Borrow_option;
+use App\Models\Category;
+use App\Models\PhysicalCopy;
+use App\Models\User;
+use Illuminate\Database\Seeder;
+
+class DemoBookSeeder extends Seeder
+{
+    public function run(): void
+    {
+        $author1 = User::where('username', 'author1')->first();
+        $author2 = User::where('username', 'author2')->first();
+        $contentEmployee = User::where('username', 'content_emp1')->first();
+
+        $categories = Category::pluck('id', 'name');
+
+        $this->makeBook([
+            'title' => 'رواية الصحراء',
+            'description' => 'رواية عن رحلة عبر الصحراء العربية.',
+            'author_id' => $author1->id,
+            'book_type' => 'both',
+            'price_physical' => 8,
+            'price_digital' => 4,
+            'publish_status' => 'published',
+            'published_at' => now()->subDays(60),
+        ], [$categories['روايات']], saleCopies: 5, borrowCopies: 2, borrowOptions: [
+            ['duration_days' => 7, 'physical_price' => 1, 'digital_price' => 0.5],
+            ['duration_days' => 14, 'physical_price' => 1.5, 'digital_price' => 0.8],
+        ]);
+
+        $this->makeBook([
+            'title' => 'أساسيات الفيزياء',
+            'description' => 'مقدمة شاملة لمبادئ الفيزياء الحديثة.',
+            'author_id' => $author2->id,
+            'book_type' => 'physical',
+            'price_physical' => 12,
+            'publish_status' => 'published',
+            'published_at' => now()->subDays(45),
+        ], [$categories['علوم']], saleCopies: 3, borrowCopies: 2, borrowOptions: [
+            ['duration_days' => 14, 'physical_price' => 2, 'digital_price' => null],
+        ]);
+
+        $this->makeBook([
+            'title' => 'تاريخ الحضارات',
+            'description' => 'استعراض لأهم الحضارات القديمة وتأثيرها.',
+            'author_name' => 'د. سمير العلي، د. فادي حمدان',
+            'book_type' => 'digital',
+            'price_digital' => 6,
+            'publish_status' => 'published',
+            'published_at' => now()->subDays(90),
+            'created_by' => $contentEmployee?->id,
+        ], [$categories['تاريخ']]);
+
+        $this->makeBook([
+            'title' => 'عادات النجاح السبع',
+            'description' => 'كيف تبني عادات تقودك للنجاح المهني والشخصي.',
+            'author_id' => $author1->id,
+            'book_type' => 'both',
+            'price_physical' => 7,
+            'price_digital' => 3.5,
+            'publish_status' => 'published',
+            'published_at' => now()->subDays(20),
+        ], [$categories['تطوير الذات']], saleCopies: 4, borrowCopies: 1, borrowOptions: [
+            ['duration_days' => 7, 'physical_price' => 1, 'digital_price' => 0.5],
+        ]);
+
+        $this->makeBook([
+            'title' => 'تعلم بايثون من الصفر',
+            'description' => 'دليل عملي لتعلم لغة بايثون للمبتدئين.',
+            'author_id' => $author2->id,
+            'book_type' => 'digital',
+            'price_digital' => 5,
+            'publish_status' => 'published',
+            'published_at' => now()->subDays(10),
+        ], [$categories['تكنولوجيا']]);
+
+        $this->makeBook([
+            'title' => 'حكايات ما قبل النوم',
+            'description' => 'مجموعة قصص قصيرة للأطفال قبل النوم.',
+            'author_name' => 'مكتبة المعرفة',
+            'book_type' => 'physical',
+            'price_physical' => 4,
+            'publish_status' => 'published',
+            'published_at' => now()->subDays(5),
+            'created_by' => User::where('username', 'library_emp1')->first()?->id,
+        ], [$categories['أدب أطفال']], saleCopies: 6, borrowCopies: 3, borrowOptions: [
+            ['duration_days' => 7, 'physical_price' => 0.5, 'digital_price' => null],
+        ]);
+
+        // كتاب قيد الإرسال (Submitted) — لاختبار طابور مراجعة موظف المحتوى
+        $this->makeBook([
+            'title' => 'رواية تحت المراجعة',
+            'description' => 'رواية مُقدَّمة حديثًا وبانتظار مراجعة موظف المحتوى.',
+            'author_id' => $author1->id,
+            'book_type' => 'digital',
+            'price_digital' => 3,
+            'publish_status' => 'submitted',
+            'submitted_by' => $author1->id,
+        ], [$categories['روايات']]);
+
+        // كتاب قيد المراجعة فعليًا (Under Review) — مقفول من موظف المحتوى التجريبي
+        $this->makeBook([
+            'title' => 'كتاب قيد المراجعة الفعلية',
+            'description' => 'كتاب دخل قيد المراجعة من موظف المحتوى.',
+            'author_id' => $author2->id,
+            'book_type' => 'physical',
+            'price_physical' => 9,
+            'publish_status' => 'under_review',
+            'submitted_by' => $author2->id,
+            'reviewed_by' => $contentEmployee?->id,
+        ], [$categories['علوم']], saleCopies: 2);
+    }
+
+    private function makeBook(array $attributes, array $categoryIds, int $saleCopies = 0, int $borrowCopies = 0, array $borrowOptions = []): Book
+    {
+        $book = Book::firstOrCreate(
+            ['title' => $attributes['title']],
+            array_merge([
+                'cover_image' => 'books/covers/placeholder.jpg',
+                'digital_file' => in_array($attributes['book_type'], ['digital', 'both'], true) ? 'books/digital/placeholder.pdf' : null,
+                'publisher' => 'دار المعرفة للنشر',
+                'publisher_year' => 2023,
+                'language' => 'ar',
+                'page_count' => 200,
+                'is_hidden' => false,
+            ], $attributes)
+        );
+
+        if (! $book->wasRecentlyCreated) {
+            return $book;
+        }
+
+        $book->categories()->sync($categoryIds);
+
+        for ($i = 0; $i < $saleCopies; $i++) {
+            PhysicalCopy::create(['book_id' => $book->id, 'copy_code' => "{$book->id}-S{$i}", 'purpose' => 'sale', 'status' => 'available']);
+        }
+
+        for ($i = 0; $i < $borrowCopies; $i++) {
+            PhysicalCopy::create(['book_id' => $book->id, 'copy_code' => "{$book->id}-B{$i}", 'purpose' => 'borrowing', 'status' => 'available']);
+        }
+
+        foreach ($borrowOptions as $option) {
+            Borrow_option::create(array_merge(['book_id' => $book->id], $option));
+        }
+
+        return $book;
+    }
+}
+<?php
+
+namespace Database\Seeders;
+
+use Illuminate\Database\Console\Seeds\WithoutModelEvents;
+use Illuminate\Database\Seeder;
+
+class DatabaseSeeder extends Seeder
+{
+    use WithoutModelEvents;
+
+    /**
+     * Seed the application's database.
+     */
+    public function run(): void
+    {
+        $this->call([
+            RoleSeeder::class,
+            UserSeeder::class,
+            SystemSettingSeeder::class,
+            SeatSeeder::class,
+            CategorySeeder::class,
+            DemoUserSeeder::class,
+            DemoBookSeeder::class,
+            DemoTransactionSeeder::class,
+        ]);
+    }
+}
+<?php
+
+namespace Database\Seeders;
+
+use App\Models\Category;
+use Illuminate\Database\Seeder;
+
+class CategorySeeder extends Seeder
+{
+    public function run(): void
+    {
+        $categories = ['روايات', 'علوم', 'تاريخ', 'تطوير الذات', 'تكنولوجيا', 'أدب أطفال'];
+
+        foreach ($categories as $index => $name) {
+            Category::firstOrCreate(['name' => $name], ['is_active' => true, 'sort_order' => $index + 1]);
+        }
+    }
+}
