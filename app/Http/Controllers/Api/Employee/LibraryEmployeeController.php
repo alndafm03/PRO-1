@@ -1,10 +1,10 @@
 <?php
 namespace App\Http\Controllers\Api\Employee;
-use App\Http\Controllers\Controller;
 use App\Http\Requests\LibraryEmployee\AddCopyRequest;
 use App\Http\Requests\LibraryEmployee\CreateManualBookRequest;
 use App\Http\Requests\LibraryEmployee\RegisterReturnRequest;
 use App\Http\Requests\LibraryEmployee\UpdateCopyRequest;
+use App\Http\Controllers\Controller;
 use App\Models\Book;
 use App\Models\Borrowing;
 use App\Models\Payment;
@@ -46,12 +46,6 @@ class LibraryEmployeeController extends Controller
         });
         return response()->json(['data' => $payments]);
     }
-    /**
-     * Manual override, kept only for edge cases (e.g. a walk-in payment that
-     * was never routed through Stripe). The normal online-payment flow no
-     * longer needs this: Stripe's webhook confirms and activates the order,
-     * borrowing, or reservation automatically as soon as the charge succeeds.
-     */
     public function approvePayment(Payment $payment)
     {
         if ($payment->status !== 'pending') {
@@ -171,6 +165,12 @@ class LibraryEmployeeController extends Controller
             ]);
         return response()->json(['data' => $finalized->concat($estimated)->values()]);
     }
+    /**
+     * تسديد غرامة تأخير نقدًا في المكتبة (حالة الحضور الشخصي).
+     * يُنشئ سجل Payment موثّق (verified) بنفس نمط WalkInController بدلاً من مجرد
+     * تعليم fine_paid=true، حتى تبقى كل عمليات الدفع - بما فيها النقدية - قابلة للتتبع
+     * ضمن نظام الدفع نفسه.
+     */
     public function markFinePaid(Borrowing $borrowing)
     {
         if (! $borrowing->fine_amount || $borrowing->fine_amount <= 0) {
@@ -179,8 +179,18 @@ class LibraryEmployeeController extends Controller
         if ($borrowing->fine_paid) {
             abort(422, 'الغرامة مسدَّدة مسبقًا');
         }
-        $borrowing->update(['fine_paid' => true]);
-        return response()->json(['message' => 'تم تسديد الغرامة بنجاح', 'data' => $borrowing]);
+        DB::transaction(function () use ($borrowing) {
+            $borrowing->payments()->create([
+                'user_id' => $borrowing->user_id,
+                'amount' => $borrowing->fine_amount,
+                'status' => 'verified',
+                'purpose' => 'fine',
+                'gateway' => 'cash',
+                'paid_at' => now(),
+            ]);
+            $borrowing->update(['fine_paid' => true]);
+        });
+        return response()->json(['message' => 'تم تسديد الغرامة بنجاح', 'data' => $borrowing->fresh()]);
     }
     public function reservations(Request $request)
     {
@@ -233,4 +243,3 @@ class LibraryEmployeeController extends Controller
         ], 201);
     }
 }
-

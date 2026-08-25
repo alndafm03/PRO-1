@@ -13,15 +13,10 @@ class PaymentController extends Controller
     public function __construct(private readonly StripePaymentService $stripe)
     {
     }
-    /**
-     * Create a Stripe Checkout Session (Test Mode) for the pending payment
-     * attached to an order / borrowing / reservation, and return the hosted
-     * checkout URL for the frontend to redirect the user to.
-     */
     public function createCheckoutSession(Request $request)
     {
         $payable = $this->resolvePayable($request);
-        $payment = $payable->payments()->pending()->latest()->first();
+        $payment = $payable->payments()->primary()->pending()->latest()->first();
         if (! $payment) {
             abort(404, 'لا توجد عملية دفع بانتظار الدفع');
         }
@@ -37,16 +32,50 @@ class PaymentController extends Controller
             ],
         ]);
     }
-    /**
-     * Lightweight status endpoint the frontend can poll right after the
-     * Stripe redirect back, in case the webhook hasn't landed yet.
-     */
     public function status(Request $request)
     {
         $payable = $this->resolvePayable($request);
-        $payment = $payable->payments()->latest()->first();
+        $payment = $payable->payments()->primary()->latest()->first();
         if (! $payment) {
             abort(404, 'لا توجد عملية دفع مرتبطة');
+        }
+        return response()->json([
+            'data' => [
+                'status' => $payment->status,
+                'amount' => (float) $payment->amount,
+                'paid_at' => $payment->paid_at,
+            ],
+        ]);
+    }
+    public function createFineCheckoutSession(Request $request, Borrowing $borrowing)
+    {
+        if ($borrowing->user_id !== $request->user()->id) {
+            abort(403, 'هذه الغرامة لا تخصك');
+        }
+        $payment = $borrowing->payments()->fines()->pending()->latest()->first();
+        if (! $payment) {
+            abort(404, 'لا توجد عملية دفع غرامة بانتظار الدفع');
+        }
+        $session = $this->stripe->createCheckoutSessionForPayment(
+            $payment,
+            'غرامة تأخير: ' . ($borrowing->book->title ?? $borrowing->id)
+        );
+        return response()->json([
+            'data' => [
+                'checkout_url' => $session->url,
+                'session_id' => $session->id,
+                'payment' => $payment->fresh(),
+            ],
+        ]);
+    }
+    public function fineStatus(Request $request, Borrowing $borrowing)
+    {
+        if ($borrowing->user_id !== $request->user()->id) {
+            abort(403, 'هذه الغرامة لا تخصك');
+        }
+        $payment = $borrowing->payments()->fines()->latest()->first();
+        if (! $payment) {
+            abort(404, 'لا توجد عملية دفع غرامة مرتبطة');
         }
         return response()->json([
             'data' => [

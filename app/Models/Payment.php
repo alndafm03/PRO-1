@@ -9,6 +9,7 @@ class Payment extends Model
         'user_id',
         'payable_type',
         'payable_id',
+        'purpose',
         'amount',
         'currency',
         'gateway',
@@ -37,20 +38,24 @@ class Payment extends Model
     {
         return $query->where('status', 'pending');
     }
-    /**
-     * "verified" is the state a payment reaches once Stripe confirms the
-     * charge succeeded (previously reached manually by a library employee).
-     */
     public function scopePaid($query)
     {
         return $query->where('status', 'verified');
     }
-    public function markAsPaid(string $paymentIntentId): void
+    public function scopePrimary($query)
+    {
+        return $query->where('purpose', 'primary');
+    }
+    public function scopeFines($query)
+    {
+        return $query->where('purpose', 'fine');
+    }
+    public function markAsPaid(string $paymentIntentId, string $gateway = 'stripe'): void
     {
         $this->update([
             'status' => 'verified',
-            'gateway' => 'stripe',
-            'stripe_payment_intent_id' => $paymentIntentId,
+            'gateway' => $gateway,
+            'stripe_payment_intent_id' => $paymentIntentId !== '' ? $paymentIntentId : $this->stripe_payment_intent_id,
             'paid_at' => now(),
         ]);
     }
