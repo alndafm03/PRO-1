@@ -222,5 +222,3 @@ Route::middleware(['auth:sanctum', 'role:admin'])
         Route::get('/settings', [AdminSettingsController::class, 'index']);
         Route::put('/settings/{key}', [AdminSettingsController::class, 'update']);
     });
-/ /   u p d a t e   f i n e s   r o u t e s  
- 
