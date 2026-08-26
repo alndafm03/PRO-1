@@ -92,12 +92,12 @@ class LibraryEmployeeController extends Controller
         }
         $isDamaged = $request->boolean('is_damaged');
         DB::transaction(function () use ($borrowing, $isDamaged) {
-            $fine = $isDamaged ? 0.0 : $borrowing->calculateFine();
+            // finalizeFine() تحسب وتُجمّد الغرامة بينما لا تزال الإعارة "active"
+            // (نفس المنطق المستخدم الآن أيضًا للإعارات الرقمية عند انتهائها).
+            $borrowing->finalizeFine($isDamaged);
             $borrowing->update([
                 'status' => 'returned',
                 'returned_at' => now(),
-                'fine_amount' => $fine > 0 ? $fine : null,
-                'fine_days_late' => $fine > 0 ? $borrowing->daysLateAttribute() : null,
             ]);
             if ($borrowing->physical_copy_id && $borrowing->physicalCopy) {
                 $borrowing->physicalCopy->update([
@@ -152,6 +152,7 @@ class LibraryEmployeeController extends Controller
                 'is_estimated' => false,
             ]);
         $estimated = Borrowing::query()
+            ->where('book_type', 'physical')
             ->overdueCandidates()
             ->with(['user', 'book'])
             ->get()
@@ -165,12 +166,6 @@ class LibraryEmployeeController extends Controller
             ]);
         return response()->json(['data' => $finalized->concat($estimated)->values()]);
     }
-    /**
-     * تسديد غرامة تأخير نقدًا في المكتبة (حالة الحضور الشخصي).
-     * يُنشئ سجل Payment موثّق (verified) بنفس نمط WalkInController بدلاً من مجرد
-     * تعليم fine_paid=true، حتى تبقى كل عمليات الدفع - بما فيها النقدية - قابلة للتتبع
-     * ضمن نظام الدفع نفسه.
-     */
     public function markFinePaid(Borrowing $borrowing)
     {
         if (! $borrowing->fine_amount || $borrowing->fine_amount <= 0) {

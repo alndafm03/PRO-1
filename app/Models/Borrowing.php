@@ -1,16 +1,8 @@
 <?php
-
 namespace App\Models;
-
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
-
-/**
- * FR-21 → FR-36, BR-04 → BR-07, BR-16, BR-17
- * حالة "overdue" غير مخزّنة بالـDB أبداً — تُحسب ديناميكياً عبر isOverdue()/الـaccessor،
- * تماماً متل ما موثّق بتعليق الـmigration الأصلي.
- */
 class Borrowing extends Model
 {
     protected $fillable = [
@@ -34,7 +26,6 @@ class Borrowing extends Model
         'author_revenue_percent_snapshot',
         'author_share_amount',
     ];
-
     protected function casts(): array
     {
         return [
@@ -50,95 +41,75 @@ class Borrowing extends Model
             'author_share_amount' => 'decimal:2',
         ];
     }
-
-    // ------------------------------------------------------------------
-    // العلاقات
-    // ------------------------------------------------------------------
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class, 'user_id');
     }
-
     public function createdBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
     }
-
     public function book(): BelongsTo
     {
         return $this->belongsTo(Book::class);
     }
-
     public function physicalCopy(): BelongsTo
     {
         return $this->belongsTo(PhysicalCopy::class);
     }
-
     public function borrow_option(): BelongsTo
     {
         return $this->belongsTo(Borrow_option::class);
     }
-
     public function payments(): MorphMany
     {
         return $this->morphMany(Payment::class, 'payable');
     }
-
-    // ------------------------------------------------------------------
-    // Scopes
-    // ------------------------------------------------------------------
     public function scopeActive($query)
     {
         return $query->where('status', 'active');
     }
-
     public function scopeOverdueCandidates($query)
     {
-        // مسار البحث المفهرس (status, end_date) بالـmigration
         return $query->where('status', 'active')->whereDate('end_date', '<', now());
     }
-
-    // ------------------------------------------------------------------
-    // منطق محسوب (BR-06, BR-07, BR-17) — غير مخزّن
-    // ------------------------------------------------------------------
     public function isOverdueAttribute(): bool
     {
         return $this->status === 'active'
             && $this->end_date !== null
             && $this->end_date->isPast();
     }
-
     public function daysLateAttribute(): int
     {
         if (! $this->isOverdueAttribute() || $this->end_date === null) {
             return 0;
         }
-
-        // FIX: Carbon 3's diffInDays() is signed by default (negative when the target is in
-        // the past), unlike Carbon 2 — this returned negative day counts for every overdue
-        // borrowing, which fed straight into calculateFine() as a negative fine.
         return (int) now()->diffInDays($this->end_date, absolute: true);
     }
-
     public function canRenew(): bool
     {
-        // BR-06: تجديد مرة واحدة فقط، وقبل الانتهاء
         return $this->status === 'active'
             && ! $this->renewed
             && $this->end_date !== null
             && ! $this->end_date->isPast();
     }
-
     public function calculateFine(): float
     {
-        // BR-07: fine = 5% × price × days_late, capped at the BOOK's own price (not the borrowing price).
-        // FIX: كانت هاي الدالة بدون سقف إطلاقًا، بمخالفة صريحة لـFR-32 ("لا يمكن أن تتجاوز الغرامة سعر الكتاب").
         $fine = round(0.05 * (float) $this->price * $this->daysLateAttribute(), 2);
-
         $bookPrice = $this->book_type === 'physical'
             ? (float) $this->book?->price_physical
             : (float) $this->book?->price_digital;
-
         return $bookPrice > 0 ? min($fine, $bookPrice) : $fine;
+    }
+    public function finalizeFine(bool $isDamaged = false): void
+    {
+        if ($this->fine_amount !== null) {
+            return;
+        }
+        $fine = $isDamaged ? 0.0 : $this->calculateFine();
+        $this->update([
+            'fine_amount' => $fine > 0 ? $fine : null,
+            'fine_days_late' => $fine > 0 ? $this->daysLateAttribute() : null,
+        ]);
     }
 }
