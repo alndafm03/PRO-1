@@ -101,6 +101,13 @@ class Borrowing extends Model
             : (float) $this->book?->price_digital;
         return $bookPrice > 0 ? min($fine, $bookPrice) : $fine;
     }
+    /**
+     * يجمّد قيمة الغرامة على السجل بشكل نهائي (قابل للدفع) بدلاً من إبقائها
+     * "تقديرية" تُحسب ديناميكيًا من overdueCandidates(). يجب استدعاؤها فقط
+     * بينما لا تزال الإعارة "active" (قبل تغيير حالتها إلى returned/expired)
+     * لأن calculateFine() يعتمد على isOverdueAttribute() التي تتحقق من الحالة.
+     * آمنة للاستدعاء أكثر من مرة (لن تُعيد الحساب إذا كانت الغرامة مُجمَّدة مسبقًا).
+     */
     public function finalizeFine(bool $isDamaged = false): void
     {
         if ($this->fine_amount !== null) {

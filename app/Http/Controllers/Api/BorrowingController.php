@@ -123,6 +123,8 @@ class BorrowingController extends Controller
         }
         $isPastEnd = $borrowing->end_date !== null && $borrowing->end_date->isPast();
         if ($borrowing->status === 'active' && $isPastEnd) {
+            // نظام الغرامات لا يُطبَّق على الإعارات الرقمية أصلًا — الوصول
+            // يُمنع تلقائيًا بانتهاء المدة، فلا حاجة لأي غرامة هنا.
             $borrowing->update(['status' => 'expired']);
         }
         if ($borrowing->book_type !== 'digital' || $borrowing->status !== 'active' || $isPastEnd) {
