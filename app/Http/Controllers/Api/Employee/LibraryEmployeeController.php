@@ -153,6 +153,7 @@ class LibraryEmployeeController extends Controller
             ]);
         $estimated = Borrowing::query()
             ->overdueCandidates()
+            // نفس سبب الاستثناء بـFineController::myFines — منع ظهور الغرامة بالقائمتين معًا.
             ->whereNull('fine_amount')
             ->with(['user', 'book'])
             ->get()
