@@ -1,12 +1,9 @@
 <?php
-
 namespace App\Http\Controllers\Api;
-
 use App\Http\Controllers\Controller;
 use App\Models\Borrowing;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-
 class FineController extends Controller
 {
     public function myFines(Request $request)
@@ -19,21 +16,20 @@ class FineController extends Controller
             ->where('fine_paid', false)
             ->with('book')
             ->get()
-            ->map(fn(Borrowing $b) => [
+            ->map(fn (Borrowing $b) => [
                 'borrowing_id' => $b->id,
                 'book' => $b->book,
                 'amount' => (float) $b->fine_amount,
                 'days_late' => $b->fine_days_late,
                 'is_estimated' => false,
             ]);
-
         $estimated = Borrowing::query()
             ->where('user_id', $userId)
-            ->where('book_type', 'physical')
             ->overdueCandidates()
+            ->whereNull('fine_amount')
             ->with('book')
             ->get()
-            ->map(fn(Borrowing $b) => [
+            ->map(fn (Borrowing $b) => [
                 'borrowing_id' => $b->id,
                 'book' => $b->book,
                 'amount' => $b->calculateFine(),
@@ -54,30 +50,42 @@ class FineController extends Controller
         if ($borrowing->user_id !== $user->id) {
             abort(403, 'هذه الغرامة لا تخصك');
         }
-        return DB::transaction(function () use ($borrowing, $user) {
-            $borrowing = Borrowing::query()->whereKey($borrowing->id)->lockForUpdate()->firstOrFail();
-            if ($borrowing->book_type !== 'physical') {
-                abort(422, 'نظام الغرامات يُطبَّق فقط على الإعارات الورقية');
-            }
-            if (! $borrowing->fine_amount || $borrowing->fine_amount <= 0) {
+        if ($borrowing->fine_paid) {
+            abort(422, 'الغرامة مسدَّدة مسبقًا');
+        }
+        $payment = DB::transaction(function () use ($borrowing, $user) {
+            $borrowing = Borrowing::query()->lockForUpdate()->findOrFail($borrowing->id);
+            $amount = $borrowing->isOverdueAttribute()
+                ? $borrowing->calculateFine()
+                : (float) $borrowing->fine_amount;
+            if ($amount <= 0) {
                 abort(422, 'لا توجد غرامة مستحقة على هذه الإعارة');
             }
-            if ($borrowing->fine_paid) {
-                abort(422, 'الغرامة مسدَّدة مسبقًا');
-            }
+            $borrowing->update([
+                'fine_amount' => $amount,
+                'fine_days_late' => $borrowing->isOverdueAttribute()
+                    ? $borrowing->daysLateAttribute()
+                    : $borrowing->fine_days_late,
+            ]);
+
             $payment = $borrowing->payments()->fines()->pending()->latest()->first();
             if (! $payment) {
-                $payment = $borrowing->payments()->create([
+                return $borrowing->payments()->create([
                     'user_id' => $user->id,
-                    'amount' => $borrowing->fine_amount,
+                    'amount' => $amount,
                     'status' => 'pending',
                     'purpose' => 'fine',
                 ]);
             }
-            return response()->json([
-                'message' => 'تم إنشاء عملية دفع الغرامة، بانتظار الدفع',
-                'data' => $payment,
-            ], 201);
+            // دفعة معلّقة قديمة: لازم تتحدّث، وإلا المستخدم بيدفع مبلغ أيام تأخير أقل.
+            if (round((float) $payment->amount, 2) !== round($amount, 2)) {
+                $payment->update(['amount' => $amount]);
+            }
+            return $payment->fresh();
         });
+        return response()->json([
+            'message' => 'تم إنشاء عملية دفع الغرامة، بانتظار الدفع',
+            'data' => $payment,
+        ], 201);
     }
 }

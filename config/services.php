@@ -2,18 +2,6 @@
 
 return [
 
-    /*
-    |--------------------------------------------------------------------------
-    | Third Party Services
-    |--------------------------------------------------------------------------
-    |
-    | This file is for storing the credentials for third party services such
-    | as Mailgun, Postmark, AWS and more. This file provides the de facto
-    | location for this type of information, allowing packages to have
-    | a conventional file to locate the various service credentials.
-    |
-    */
-
     'postmark' => [
         'key' => env('POSTMARK_API_KEY'),
     ],
@@ -41,6 +29,10 @@ return [
         'webhook_secret' => env('STRIPE_WEBHOOK_SECRET'),
         'success_url' => env('STRIPE_SUCCESS_URL', env('APP_URL')),
         'cancel_url' => env('STRIPE_CANCEL_URL', env('APP_URL')),
+
+        'currency' => env('PAYMENT_CURRENCY', 'usd'),
+
+        'display_currency' => env('DISPLAY_CURRENCY', 'SYP'),
     ],
 
 ];

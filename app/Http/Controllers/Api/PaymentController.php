@@ -43,6 +43,8 @@ class PaymentController extends Controller
             'data' => [
                 'status' => $payment->status,
                 'amount' => (float) $payment->amount,
+                'currency' => $payment->currency,
+                'display_currency' => config('services.stripe.display_currency'),
                 'paid_at' => $payment->paid_at,
             ],
         ]);
@@ -81,6 +83,8 @@ class PaymentController extends Controller
             'data' => [
                 'status' => $payment->status,
                 'amount' => (float) $payment->amount,
+                'currency' => $payment->currency,
+                'display_currency' => config('services.stripe.display_currency'),
                 'paid_at' => $payment->paid_at,
             ],
         ]);
