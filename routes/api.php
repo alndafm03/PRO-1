@@ -96,9 +96,9 @@ Route::middleware('auth:sanctum')->group(function () {
     });
     Route::prefix('fines')->group(function () {
         Route::get('/', [FineController::class, 'myFines']);
+        Route::post('/{borrowing}/pay', [FineController::class, 'payFine']);
         Route::post('/{borrowing}/checkout-session', [PaymentController::class, 'createFineCheckoutSession']);
         Route::get('/{borrowing}/payment-status', [PaymentController::class, 'fineStatus']);
-        Route::post('/fines/{borrowing}/checkout-session', [PaymentController::class, 'createFineCheckoutSession']);
     });
     Route::get('/seats/availability', [SeatController::class, 'availability']);
     Route::prefix('reservations')->group(function () {
