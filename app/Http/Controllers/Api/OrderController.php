@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Resources\OrderItemResource;
+use App\Http\Resources\OrderResource;
 use App\Models\Book;
 use App\Models\Order;
 use App\Models\Order_items;
@@ -15,9 +17,6 @@ use Illuminate\Support\Facades\DB;
 
 class OrderController extends Controller
 {
-    /**
-     * FR-16: عرض قائمة طلبات الشراء الخاصة بالمستخدم.
-     */
     public function index(Request $request)
     {
         $orders = $request->user()->orders()
@@ -25,26 +24,18 @@ class OrderController extends Controller
             ->latest()
             ->paginate($request->integer('per_page', 20));
 
-        return response()->json(['data' => $orders]);
+        return response()->json(['data' => OrderResource::collection($orders)]);
     }
 
-    /**
-     * FR-16: عرض تفاصيل طلب شراء محدد.
-     */
     public function show(Request $request, Order $order)
     {
-        if ($order->user_id !== $request->user()->id) {
-            abort(403, 'هذا الطلب لا يخصك');
-        }
+        $this->authorize('view', $order);
 
-        return response()->json(['data' => $order->load('items.book', 'payments')]);
+        return response()->json([
+            'data' => new OrderResource($order->load('items.book', 'payments')),
+        ]);
     }
 
-    /**
-     * FR-16/FR-17/FR-18: تحويل عناصر السلة إلى طلب شراء فعلي (Checkout).
-     * BR-02: لكل عنصر ورقي، تُخصَّص نسخة sale متاحة وتُقفل فورًا (status=sold) لمنع البيع المزدوج.
-     * إذا رُفض الطلب لاحقًا من الموظف، يجب تحرير هذه النسخ (تُنفَّذ ضمن دفعة Library Employee).
-     */
     public function checkout(Request $request, CartService $cartService)
     {
         $user = $request->user();
@@ -106,7 +97,6 @@ class OrderController extends Controller
             }
 
             $order->recalculateTotal();
-
             $order->payments()->create([
                 'user_id' => $user->id,
                 'amount' => $order->total_amount,
@@ -118,25 +108,19 @@ class OrderController extends Controller
 
         $cartService->clear($user);
 
-        // FR-53: نشاط "شراء" لكل كتاب مختلف بالطلب (مرة وحدة حتى لو اشترى عدة نسخ من نفس الكتاب).
         foreach (collect($cart)->pluck('book_id')->unique() as $bookId) {
             User_activity::log($user->id, $bookId, 'purchase');
         }
 
         return response()->json([
             'message' => 'تم إنشاء الطلب بنجاح، بانتظار الدفع',
-            'data' => $order->load('items.book', 'payments'),
+            'data' => new OrderResource($order->load('items.book', 'payments')),
         ], 201);
     }
 
-    /**
-     * FR-17: تأكيد استلام العنصر الورقي (من قبل المستخدم نفسه بعد استلامه من المكتبة) وتحويله لمكتمل.
-     */
     public function markCompleted(Request $request, Order_items $orderItem)
     {
-        if ($orderItem->order->user_id !== $request->user()->id) {
-            abort(403, 'هذا العنصر لا يخصك');
-        }
+        $this->authorize('view', $orderItem);
 
         if ($orderItem->type !== 'physical' || $orderItem->status !== 'ready') {
             abort(422, 'هذا العنصر غير جاهز للاستلام');
@@ -144,12 +128,12 @@ class OrderController extends Controller
 
         $orderItem->update(['status' => 'completed', 'completed_at' => now()]);
 
-        return response()->json(['message' => 'تم تأكيد الاستلام بنجاح', 'data' => $orderItem]);
+        return response()->json([
+            'message' => 'تم تأكيد الاستلام بنجاح',
+            'data' => new OrderItemResource($orderItem),
+        ]);
     }
 
-    /**
-     * BR-11: عرض جميع المشتريات الرقمية التي يملك المستخدم صلاحية وصول دائم إليها.
-     */
     public function myPurchases(Request $request)
     {
         $purchases = Order_items::query()
@@ -160,6 +144,6 @@ class OrderController extends Controller
             ->latest()
             ->paginate($request->integer('per_page', 20));
 
-        return response()->json(['data' => $purchases]);
+        return response()->json(['data' => OrderItemResource::collection($purchases)]);
     }
 }

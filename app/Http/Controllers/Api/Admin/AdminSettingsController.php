@@ -3,19 +3,14 @@
 namespace App\Http\Controllers\Api\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Admin\SetAuthorRevenuePercentRequest;
+use App\Http\Requests\Admin\UpdateSettingRequest;
 use App\Models\System_setting;
-use Illuminate\Http\Request;
 
 class AdminSettingsController extends Controller
 {
-    /**
-     * مفاتيح الإعدادات المسموح عرضها للزائر (Guest) - معلومات عامة عن المكتبة.
-     */
     private const PUBLIC_KEYS = ['library_name', 'library_address', 'library_phone', 'working_hours'];
 
-    /**
-     * عرض المعلومات العامة عن المكتبة (لصفحة "معلومات المكتبة" التي يراها Guest).
-     */
     public function publicInfo()
     {
         $settings = System_setting::whereIn('key', self::PUBLIC_KEYS)->pluck('value', 'key');
@@ -23,9 +18,6 @@ class AdminSettingsController extends Controller
         return response()->json(['data' => $settings]);
     }
 
-    /**
-     * FR-49: استعلام عن نسبة أرباح المؤلفين الحالية.
-     */
     public function getAuthorRevenuePercent()
     {
         return response()->json([
@@ -35,14 +27,9 @@ class AdminSettingsController extends Controller
         ]);
     }
 
-    /**
-     * FR-49: تعديل نسبة أرباح المؤلفين. لا تؤثر على العمليات السابقة (BR-16: تُحفظ كـ snapshot).
-     */
-    public function setAuthorRevenuePercent(Request $request)
+    public function setAuthorRevenuePercent(SetAuthorRevenuePercentRequest $request)
     {
-        $validated = $request->validate([
-            'value' => ['required', 'numeric', 'min:0', 'max:100'],
-        ]);
+        $validated = $request->validated();
 
         $setting = System_setting::setValue(
             'author_revenue_percent',
@@ -53,23 +40,14 @@ class AdminSettingsController extends Controller
         return response()->json(['message' => 'تم تحديث نسبة أرباح المؤلفين', 'data' => $setting]);
     }
 
-    /**
-     * عرض شجرة كافة إعدادات النظام.
-     */
     public function index()
     {
         return response()->json(['data' => System_setting::with('updatedBy')->get()]);
     }
 
-    /**
-     * تعديل قيمة إعداد محدد بالنظام عبر المفتاح.
-     */
-    public function update(Request $request, string $key)
+    public function update(UpdateSettingRequest $request, string $key)
     {
-        $validated = $request->validate([
-            'value' => ['required', 'string'],
-        ]);
-
+        $validated = $request->validated();
         $setting = System_setting::setValue($key, $validated['value'], $request->user()->id);
 
         return response()->json(['message' => 'تم تحديث الإعداد بنجاح', 'data' => $setting]);

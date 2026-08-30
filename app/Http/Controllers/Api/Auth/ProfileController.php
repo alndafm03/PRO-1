@@ -3,8 +3,10 @@
 namespace App\Http\Controllers\Api\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Profile\UpdateAvatarRequest;
 use App\Http\Requests\Profile\UpdatePasswordRequest;
 use App\Http\Requests\Profile\UpdateProfileRequest;
+use App\Http\Resources\UserResource;
 use App\Models\Borrowing;
 use App\Models\Order;
 use App\Models\User;
@@ -13,31 +15,13 @@ use Illuminate\Support\Facades\Hash;
 
 class ProfileController extends Controller
 {
-    /**
-     * دالة مساعدة لتنسيق بيانات المستخدم وتحويل مسار الـ avatar إلى رابط URL كامل.
-     */
-    private function formatUserData(User $user): User
-    {
-        if ($user->avatar && ! str_starts_with($user->avatar, 'http')) {
-            $user->avatar = asset('storage/' . $user->avatar);
-        }
-
-        return $user;
-    }
-
-    /**
-     * FR-03: عرض بيانات حساب المستخدم الحالي.
-     */
     public function show(Request $request)
     {
         $user = $request->user()->load('roles');
 
-        return response()->json(['data' => $this->formatUserData($user)]);
+        return response()->json(['data' => new UserResource($user)]);
     }
 
-    /**
-     * FR-03: تعديل البيانات الشخصية (الاسم، الهاتف، البريد، تاريخ الميلاد...).
-     */
     public function update(UpdateProfileRequest $request)
     {
         $user = $request->user();
@@ -45,32 +29,22 @@ class ProfileController extends Controller
 
         return response()->json([
             'message' => 'تم تحديث البيانات بنجاح',
-            'data' => $this->formatUserData($user->fresh()),
+            'data' => new UserResource($user->fresh()),
         ]);
     }
 
-    /**
-     * FR-03: رفع أو تغيير الصورة الشخصية.
-     */
-    public function updateAvatar(Request $request)
+    public function updateAvatar(UpdateAvatarRequest $request)
     {
-        $request->validate([
-            'avatar' => ['required', 'file', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
-        ]);
-
         $path = $request->file('avatar')->store('avatars', 'public');
         $user = $request->user();
         $user->update(['avatar' => $path]);
 
         return response()->json([
             'message' => 'تم تحديث الصورة الشخصية بنجاح',
-            'data' => $this->formatUserData($user->fresh()),
+            'data' => new UserResource($user->fresh()),
         ]);
     }
 
-    /**
-     * FR-03: تغيير كلمة المرور للمستخدم (يتطلب كلمة المرور الحالية).
-     */
     public function updatePassword(UpdatePasswordRequest $request)
     {
         $request->user()->update(['password' => Hash::make($request->validated('password'))]);
@@ -78,9 +52,6 @@ class ProfileController extends Controller
         return response()->json(['message' => 'تم تغيير كلمة المرور بنجاح']);
     }
 
-    /**
-     * FR-04: حذف الحساب نهائيًا — بشرط عدم وجود التزامات نشطة.
-     */
     public function destroy(Request $request)
     {
         $user = $request->user();

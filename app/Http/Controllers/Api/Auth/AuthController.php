@@ -3,6 +3,9 @@
 namespace App\Http\Controllers\Api\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Auth\LoginRequest;
+use App\Http\Requests\Auth\RegisterRequest;
+use App\Http\Resources\UserResource;
 use App\Models\Role;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -10,18 +13,9 @@ use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
 {
-    //تسجيل حساب
-    public function register(Request $request)
+    public function register(RegisterRequest $request)
     {
-        $validated = $request->validate([
-            'full_name' => ['required', 'string', 'max:255'],
-            'username'  => ['required', 'string', 'max:255', 'unique:users,username'],
-            'phone'     => ['required', 'string', 'max:20', 'unique:users,phone'],
-            'email'     => ['required', 'email', 'max:255', 'unique:users,email'],
-            'password'  => ['required', 'string', 'min:8', 'confirmed'],
-            'birthday'  => ['required', 'date', 'before:today'],
-            'avatar'    => ['nullable', 'image', 'max:4096'],
-        ]);
+        $validated = $request->validated();
 
         if ($request->hasFile('avatar')) {
             $validated['avatar'] = $request->file('avatar')->store('avatars', 'public');
@@ -46,19 +40,15 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'تم إنشاء الحساب بنجاح',
             'data' => [
-                'user'  => $user->load('roles'),
+                'user'  => new UserResource($user->load('roles')),
                 'token' => $token,
             ],
         ], 201);
     }
 
-    //تسجيل الدخول
-    public function login(Request $request)
+    public function login(LoginRequest $request)
     {
-        $validated = $request->validate([
-            'login'    => ['required', 'string'],
-            'password' => ['required', 'string'],
-        ]);
+        $validated = $request->validated();
 
         $user = User::where('email', $validated['login'])
             ->orWhere('username', $validated['login'])
@@ -77,19 +67,17 @@ class AuthController extends Controller
         }
 
         $user->forceFill(['last_login_at' => now()])->save();
-
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
             'message' => 'تم تسجيل الدخول بنجاح',
             'data' => [
-                'user'  => $user->load('roles'),
+                'user'  => new UserResource($user->load('roles')),
                 'token' => $token,
             ],
         ]);
     }
 
-    //تسجيل الخروج
     public function logout(Request $request)
     {
         $request->user()->currentAccessToken()->delete();

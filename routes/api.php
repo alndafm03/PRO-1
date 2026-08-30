@@ -1,41 +1,40 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\Auth\AuthController;
-use App\Http\Controllers\Api\Auth\ProfileController;
-use App\Http\Controllers\Api\BookController;
-use App\Http\Controllers\Api\CategoryController;
-use App\Http\Controllers\Api\SearchController;
-use App\Http\Controllers\Api\FavoriteController;
-use App\Http\Controllers\Api\CartController;
-use App\Http\Controllers\Api\OrderController;
-use App\Http\Controllers\Api\PaymentController;
-use App\Http\Controllers\Api\BorrowingController;
-use App\Http\Controllers\Api\FineController;
-use App\Http\Controllers\Api\SeatController;
-use App\Http\Controllers\Api\ReservationController;
-use App\Http\Controllers\Api\AuthorRequestController;
-use App\Http\Controllers\Api\AuthorBookController;
-use App\Http\Controllers\Api\AuthorEarningController;
-use App\Http\Controllers\Api\BookFeedbackController;
-use App\Http\Controllers\Api\UserActivityController;
-use App\Http\Controllers\Api\RecommendationController;
-use App\Http\Controllers\Api\OfferController;
-use App\Http\Controllers\Api\NotificationController;
-use App\Http\Controllers\Api\Employee\LibraryEmployeeController;
-use App\Http\Controllers\Api\Employee\WalkInController;
-use App\Http\Controllers\Api\Employee\AuthorContentEmployeeController;
-use App\Http\Controllers\Api\Admin\AdminUserController;
-use App\Http\Controllers\Api\Admin\AdminEmployeeController;
 use App\Http\Controllers\Api\Admin\AdminAuthorController;
 use App\Http\Controllers\Api\Admin\AdminBookController;
 use App\Http\Controllers\Api\Admin\AdminDashboardController;
+use App\Http\Controllers\Api\Admin\AdminEmployeeController;
 use App\Http\Controllers\Api\Admin\AdminSettingsController;
+use App\Http\Controllers\Api\Admin\AdminUserController;
+use App\Http\Controllers\Api\Auth\AuthController;
+use App\Http\Controllers\Api\Auth\ProfileController;
+use App\Http\Controllers\Api\AuthorBookController;
+use App\Http\Controllers\Api\AuthorEarningController;
+use App\Http\Controllers\Api\AuthorRequestController;
+use App\Http\Controllers\Api\BookController;
+use App\Http\Controllers\Api\BookFeedbackController;
+use App\Http\Controllers\Api\BorrowingController;
+use App\Http\Controllers\Api\CartController;
+use App\Http\Controllers\Api\CategoryController;
+use App\Http\Controllers\Api\Employee\AuthorContentEmployeeController;
+use App\Http\Controllers\Api\Employee\LibraryEmployeeController;
+use App\Http\Controllers\Api\Employee\WalkInController;
+use App\Http\Controllers\Api\FavoriteController;
+use App\Http\Controllers\Api\FineController;
+use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\OfferController;
+use App\Http\Controllers\Api\OrderController;
+use App\Http\Controllers\Api\PaymentController;
+use App\Http\Controllers\Api\RecommendationController;
+use App\Http\Controllers\Api\ReservationController;
+use App\Http\Controllers\Api\SearchController;
+use App\Http\Controllers\Api\SeatController;
 use App\Http\Controllers\Api\StripeWebhookController;
+use Illuminate\Support\Facades\Route;
 
 Route::prefix('books')->group(function () {
-    Route::get('/', [BookController::class, 'index']);
-    Route::get('/{book}', [BookController::class, 'show']);
+    Route::get('/', [BookController::class, 'index'])->name('books.index');
+    Route::get('/{book}', [BookController::class, 'show'])->name('books.show');
     Route::get('/{book}/reviews', [BookFeedbackController::class, 'index']);
     Route::get('/{book}/availability', [BookController::class, 'availability']);
 });
@@ -47,13 +46,18 @@ Route::get('/search', [SearchController::class, 'search']);
 Route::get('/filter/books', [SearchController::class, 'filterBooks']);
 Route::get('/library/info', [AdminSettingsController::class, 'publicInfo']);
 Route::post('/stripe/webhook', [StripeWebhookController::class, 'handle']);
+
 Route::prefix('auth')->group(function () {
-    Route::post('/register', [AuthController::class, 'register']);
-    Route::post('/login', [AuthController::class, 'login']);
+    // Fix: no rate limiting on login/register. Both are now throttled by
+    // the named limiters registered in AppServiceProvider (per submitted
+    // identifier + IP for login, per IP for register).
+    Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:register');
+    Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:login');
     Route::middleware('auth:sanctum')->group(function () {
         Route::post('/logout', [AuthController::class, 'logout']);
     });
 });
+
 Route::middleware('auth:sanctum')->group(function () {
     Route::prefix('profile')->group(function () {
         Route::get('/', [ProfileController::class, 'show']);
@@ -139,6 +143,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/earnings/{book}', [AuthorEarningController::class, 'forBook']);
     });
 });
+
 Route::middleware(['auth:sanctum', 'role:library_employee'])
     ->prefix('employee/library')
     ->group(function () {
@@ -168,6 +173,7 @@ Route::middleware(['auth:sanctum', 'role:library_employee'])
         });
         Route::post('/manual-books', [LibraryEmployeeController::class, 'createManualBook']);
     });
+
 Route::middleware(['auth:sanctum', 'role:author_content_employee'])
     ->prefix('employee/content')
     ->group(function () {
@@ -184,6 +190,7 @@ Route::middleware(['auth:sanctum', 'role:author_content_employee'])
         Route::post('/modification-requests/{authorRequest}/approve', [AuthorContentEmployeeController::class, 'approveModification']);
         Route::post('/modification-requests/{authorRequest}/reject', [AuthorContentEmployeeController::class, 'rejectModification']);
     });
+
 Route::middleware(['auth:sanctum', 'role:admin'])
     ->prefix('admin')
     ->group(function () {

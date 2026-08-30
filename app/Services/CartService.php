@@ -4,10 +4,6 @@ namespace App\Services;
 
 use App\Models\User;
 use Illuminate\Support\Facades\Cache;
-
-/**
- * FR-16: لا يوجد جدول Cart بالـDB — السلة تُخزّن مؤقتًا (Cache) لكل مستخدم، لا كجدول دائم.
- */
 class CartService
 {
     private function key(User $user): string

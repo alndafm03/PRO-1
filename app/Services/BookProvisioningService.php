@@ -5,17 +5,8 @@ namespace App\Services;
 use App\Models\Book;
 use App\Models\Borrow_option;
 use App\Models\PhysicalCopy;
-
-/**
- * منطق مشترك بين AuthorBookController وLibraryEmployeeController (نشر كتاب مؤلف / كتاب يدوي)
- * لضبط عدد النسخ الفيزيائية وخيارات الإعارة لكتاب.
- */
 class BookProvisioningService
 {
-    /**
-     * BR-02: يحافظ على فصل نسخ البيع عن نسخ الإعارة — يضيف/يحذف نسخ متاحة (available) بس
-     * للوصول للعدد المطلوب، ولا يلمس نسخ مباعة/مستعارة/تالفة/مفقودة حاليًا.
-     */
     public function syncPhysicalCopies(Book $book, int $saleCount, int $borrowCount): void
     {
         foreach (['sale' => $saleCount, 'borrowing' => $borrowCount] as $purpose => $targetCount) {
