@@ -1,59 +1,223 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# 📚 منصة إدارة مكتبة — واجهة برمجية (RESTful API)
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+واجهة برمجية احترافية مبنية بإطار **Laravel** تدير منصة مكتبة متكاملة (ورقية ورقمية): بيع الكتب، الاستعارة (ورقية ورقمية)، حجز مقاعد القراءة، نشر ذاتي للمؤلفين مع نظام تقاسم أرباح، إدارة الغرامات، الدفع عبر Stripe، ولوحة تحكم إدارية متعددة الأدوار (أدمن، موظفو مكتبة، مراجعو محتوى).
 
-## About Laravel
+رابط النشر الفعلي: **Railway** — `https://pro-1-production.up.railway.app`
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+---
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## ✨ نظرة عامة
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+هذا المشروع ليس مجرد تطبيق CRUD بسيط — بل يحاكي عمل مكتبة حقيقية من البداية للنهاية:
 
-## Learning Laravel
+- يستطيع القراء **شراء** أو **استعارة** الكتب (نسخ ورقية أو ملفات رقمية)، مع قفل حقيقي على المخزون لمنع البيع أو الاستعارة الزائدة عن المتاح.
+- يمكن **للمؤلفين** نشر أعمالهم ذاتيًا: تقديم مسودات، المرور بمسار مراجعة تحريرية، والحصول على نسبة أرباح قابلة للتعديل من كل عملية بيع أو استعارة لكتبهم.
+- يمكن للقراء **حجز مقاعد للقراءة** حسب التاريخ والفترة، مع تحقق فوري من السعة المتاحة.
+- **حساب تلقائي للغرامات** على الاستعارات الورقية المتأخرة، قابلة للدفع عبر نفس مسار الدفع.
+- جميع عمليات الدفع تتم عبر **Stripe Checkout**، ويتم تأكيدها عبر **Webhooks موقّعة**، مع مهمة مجدولة تقوم **بإلغاء العمليات المعلّقة تلقائيًا** وتحرير الموارد التي كانت محجوزة بسببها (نسخ، مقاعد، وصول رقمي).
+- محرك **توصيات** يقيّم نشاط كل مستخدم (مشاهدات، مفضلة، استعارة، شراء) لاقتراح كتب مخصصة له، مع رجوع لترتيب حسب الشعبية للمستخدمين الجدد.
+- واجهة **لوحة تحكم إدارية** كاملة تعرض إحصائيات المبيعات، الاستعارة، الإيرادات، الغرامات، والمقارنة بين العملاء الحضوريين والمسجّلين.
+- دعم **العملاء الحضوريين (Walk-in)** الذين لا يملكون حسابًا، عبر مسار مخصص لموظفي المكتبة.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+---
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+#### 🧱 التقنيات المستخدمة
 
-## Laravel Sponsors
+| الطبقة | التقنية / الأداة |
+|---|---|
+| **Backend Framework** | Laravel 12.x (PHP 8.2+) |
+| **Authentication** | Laravel Sanctum (API Tokens) |
+| **Database** | MySQL |
+| **Payment Gateway** | Stripe (Checkout Sessions + Signed Webhooks) |
+| **Queue / Cache / Session** | Database Driver |
+| **Task Scheduling** | Laravel Task Scheduling (`payments:expire-stale` تعمل كل دقيقة) |
+| **File Storage** | Local & Public Disks (أغلفة الكتب، الملفات الرقمية، الصور، وملفات PDF) |
+| **Hosting & Deployment** | Railway |
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+---
+---
 
-### Premium Partners
+## 👥 الأدوار والصلاحيات
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+تُبنى المنصة حول خمسة أدوار مختلفة، لكل منها مجموعة مسارات API خاصة بها:
 
-## Contributing
+| الدور | الصلاحيات |
+|---|---|
+| **قارئ** (افتراضي) | تصفح/بحث الكتب، الشراء أو الاستعارة، إدارة السلة، المفضلة، التقييمات والمراجعات، حجز المقاعد، دفع الغرامات، التقدم لتصبح مؤلفًا |
+| **مؤلف** | تقديم وإدارة مسودات الكتب، طلب تعديلات على الكتب المنشورة، متابعة أرباح المبيعات/الاستعارة لكل كتاب |
+| **موظف مكتبة** | الموافقة على/رفض المدفوعات، إدارة النسخ الورقية والمقاعد، تسجيل إرجاع الكتب، معالجة عمليات الحضوريين (بيع/استعارة/حجز)، إدارة الأقسام، معالجة الغرامات |
+| **موظف مراجعة محتوى** | مراجعة طلبات المؤلفين، مراجعة الكتب المقدَّمة (موافقة/رفض/طلب تعديل)، معالجة طلبات التعديل بعد النشر |
+| **أدمن** | إدارة كاملة للمستخدمين والموظفين، مسار الموافقة على المؤلفين، إعدادات المنصة (نسبة الأرباح، سعر المقعد)، العروض والخصومات، ولوحات تحليلات شاملة |
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+---
 
-## Code of Conduct
+## 🚀 الميزات الأساسية
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+### 📖 الاستكشاف والتصفح
+- عرض عام للكتب، صفحات تفاصيل، وتصفح حسب الأقسام
+- بحث شامل في الكتب والمؤلفين والأقسام
+- فلترة حسب اللغة، نوع الكتاب، والحد الأدنى للتقييم
+- توصيات مخصصة بناءً على تحليل نشاط المستخدم، مع رجوع لترتيب حسب الشعبية
 
-## Security Vulnerabilities
+### 🛒 الشراء والسلة
+- سلة مرتبطة بالجلسة تدعم مزيجًا من العناصر الورقية والرقمية
+- عملية شراء ذرية (Atomic): قفل وتخصيص النسخ الورقية، حفظ السعر ونسبة أرباح المؤلف لكل عنصر وقت الشراء، وإنشاء عملية دفع واحدة معلّقة
+- تتبع الطلبات بحالة لكل عنصر (`معلّق ← جاهز ← مكتمل`) للاستلام الورقي
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+### 📕 الاستعارة
+- استعارة ورقية (مع قفل وتخصيص النسخ) واستعارة رقمية (وصول محدد بمدة زمنية)
+- تجديد الاستعارة، كتالوج خيارات الاستعارة لكل كتاب، وانتهاء تلقائي للاستعارات الرقمية المتأخرة عبر المجدول
+- مسار قراءة رقمي آمن يتحقق من وجود شراء أو استعارة فعّالة قبل إتاحة الملف
 
-## License
+### 💳 المدفوعات (Stripe)
+- مسار دفع موحّد تشترك فيه الطلبات، الاستعارات، حجوزات المقاعد، والغرامات
+- معالج Webhooks موقّع يعالج أحداث `checkout.session.completed`، `async_payment_succeeded/failed`، `session.expired`، و`payment_intent.payment_failed`
+- أمر مجدول (`payments:expire-stale`) يلغي المدفوعات المعلّقة المهجورة ويحرر أي موارد كانت محجوزة بسببها
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+### 💺 حجز المقاعد
+- حجز حسب التاريخ والفترة مع تحقق فوري من السعة (مع قفل على مستوى المعاملة لمنع الحجز الزائد)
+- سعر لكل مقعد قابل للتعديل عبر إعدادات النظام
+
+### ✍️ مسار نشر المؤلفين
+- مسار: مسودة ← إرسال ← مراجعة تحريرية ← نشر
+- طلبات تعديل بعد النشر بمسار موافقة خاص بها
+- لوحات أرباح لكل كتاب وإجمالية (إيرادات المبيعات + الاستعارة، ونصيب المؤلف)
+- طلبات ترقية لمؤلف (طلب تقديم، ملفات PDF لأعمال سابقة، موافقة على مرحلتين: موافقة مبدئية من فريق المحتوى ← موافقة نهائية من الأدمن)
+
+### 💰 الغرامات
+- تقدير تلقائي للغرامات على الاستعارات الورقية المتأخرة
+- تتبع الغرامات النهائية والمقدَّرة، قابلة للدفع عبر Stripe مثل أي عملية أخرى
+
+### ⭐ التقييمات والمراجعات
+- تقييم واحد ومراجعة واحدة لكل مستخدم لكل كتاب، مقيّدة بالمشترين/المستعيرين الموثّقين
+- دورة حياة كاملة للتعديل والحذف
+
+### 🏬 العمليات الحضورية (Walk-in)
+- مسارات خاصة بالموظفين لتسجيل عمليات شراء، استعارة، وحجز للعملاء الحضوريين بدون حساب
+- تحليلات مقارنة بين العملاء الحضوريين والمسجّلين للوحة الأدمن
+
+### 📊 تحليلات الأدمن
+مسارات مخصصة للمبيعات، الاستعارة، الحجوزات، الإيرادات، الغرامات، أرباح المؤلفين، الكتب قليلة النشاط، ومقارنة الحضوريين بالمسجّلين.
+
+### 🔔 الإشعارات
+نظام إشعارات داخل التطبيق (مثل قرارات الطلبات) مع حالة مقروء/غير مقروء وتحديد الكل كمقروء دفعة واحدة.
+
+---
+
+## 🗂️ نظرة على مسارات الـ API (مختارة)
+
+جميع المسارات تبدأ بـ `/api` ومقسّمة ضمن مجموعات مسارات محمية حسب الدور.
+
+```
+عام
+  GET  /books, /books/{book}, /books/{book}/availability
+  GET  /categories, /categories/{category}/books
+  GET  /search, /filter/books
+  GET  /offers, /authors/{user}
+  POST /stripe/webhook
+
+المصادقة
+  POST /auth/register, /auth/login, /auth/logout
+
+قارئ (auth:sanctum)
+  /profile, /favorites, /cart, /orders, /purchases
+  /borrowings, /fines, /reservations, /seats/availability
+  /books/{book}/rating, /books/{book}/review
+  /recommendations, /notifications, /author-requests
+
+مؤلف (role:author)
+  /author/books, /author/books/{book}/submit
+  /author/earnings, /author/earnings/{book}
+
+موظف مكتبة (role:library_employee)
+  /employee/library/payments/*, /employee/library/borrowings/*
+  /employee/library/books/{book}/copies, /employee/library/seats
+  /employee/library/walk-in/*
+
+موظف مراجعة محتوى (role:author_content_employee)
+  /employee/content/author-requests/*, /employee/content/books/*
+
+أدمن (role:admin)
+  /admin/users, /admin/employees, /admin/author-requests
+  /admin/offers, /admin/settings
+  /admin/stats/{sales,borrowings,reservations,revenue,fines,authors-earnings,walk-in-vs-registered}
+```
+
+---
+
+## 🏗️ أبرز الجوانب المعمارية
+
+- **طبقة خدمات (Service Layer)** تفصل منطق التنسيق عن طبقة الـ HTTP — مثل `PaymentActivationService` (تفعيل/فشل الدفع وتبعاته)، `StripePaymentService` (الحد الفاصل مع SDK الخاص بـ Stripe)، `BookProvisioningService` (مزامنة النسخ الورقية وخيارات الاستعارة)، `CartService` (حفظ السلة).
+- **معاملات قاعدة بيانات مع قفل الصفوف** (`lockForUpdate`) تحمي كل عملية حساسة للمخزون — شراء آخر نسخة، استعارة آخر كتاب، أو حجز آخر مقعد — من مشاكل التزامن عند الطلبات المتزامنة.
+- **مدفوعات آمنة وقابلة للاستئناف**: دفعة "أساسية" واحدة فقط لكل طلب/استعارة/حجز، يتم إعادة تسعيرها بأمان إذا تغيرت الحالة قبل إتمام الدفع.
+- **صيانة مجدولة**: مهمة تعمل كل دقيقة لإلغاء المدفوعات المعلّقة المنتهية والاستعارات الرقمية المتأخرة دون التأثير على طلبات المستخدمين.
+- **صيغة استجابة JSON موحّدة** (`{ "data": ... }` / `{ "message": ..., "data": ... }`) واستخدام API Resources لتنسيق الاستجابات.
+- **تفويض قائم على Policies** (`$this->authorize(...)`) فوق حماية المسارات حسب الدور، لضمان التحكم على مستوى الكائن نفسه.
+
+---
+
+## ⚙️ التشغيل محليًا
+
+```bash
+git clone <repository-url>
+cd <project-directory>
+composer install
+
+cp .env.example .env
+php artisan key:generate
+
+# قم بضبط بيانات قاعدة البيانات ومفاتيح Stripe في ملف .env
+
+php artisan migrate --seed
+php artisan storage:link
+
+php artisan serve
+```
+
+### متغيرات البيئة المطلوبة
+
+```env
+APP_URL=
+DB_CONNECTION=mysql
+DB_HOST=
+DB_PORT=
+DB_DATABASE=
+DB_USERNAME=
+DB_PASSWORD=
+
+STRIPE_KEY=
+STRIPE_SECRET=
+STRIPE_WEBHOOK_SECRET=
+STRIPE_SUCCESS_URL=
+STRIPE_CANCEL_URL=
+
+PAYMENT_PENDING_EXPIRY_MINUTES=30
+```
+
+### تشغيل مجدول انتهاء الدفعات محليًا
+
+```bash
+php artisan schedule:work
+```
+
+---
+
+## 🗃️ نموذج البيانات (الكيانات الأساسية)
+
+`User` · `Role` · `Book` · `Category` · `BorrowOption` · `PhysicalCopy` · `Order` / `OrderItem` · `Borrowing` · `Reservation` · `Payment` (متعدد الأشكال) · `Favorite` · `BookFeedback` · `AuthorRequest` · `Offer` · `Seat` · `Notification` · `UserActivity` · `SystemSetting`
+
+---
+
+## 🛣️ خطة التطوير المستقبلية
+
+- [ ] مجموعة اختبارات آلية (Feature + Unit) لمسارات الدفع والـ Webhooks
+- [ ] توثيق API عبر OpenAPI/Swagger
+- [ ] فئة API عامة محدودة المعدل (Rate-limited) للتكاملات الخارجية
+- [ ] دعم عملات متعددة إلى جانب آلية العرض بعملة Stripe
+
+---
+
+## 👤 المطوّر
+
+تم بناء وصيانة هذا المشروع بواسطة **[ Mohammad Alnadaf]**.
+لا تتردد بالتواصل لأي استفسار أو تعاون.
