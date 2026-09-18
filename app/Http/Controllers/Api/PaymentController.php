@@ -9,10 +9,12 @@ use App\Models\Order;
 use App\Models\Reservation;
 use App\Services\StripePaymentService;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\Request;
 
 class PaymentController extends Controller
 {
+    use AuthorizesRequests;
     public function __construct(private readonly StripePaymentService $stripe)
     {
     }
